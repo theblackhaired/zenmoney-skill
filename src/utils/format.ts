@@ -9,6 +9,7 @@ export function formatAccount(account: Account, instruments: Map<number, Instrum
     type: account.type,
     balance: account.balance,
     currency: currency?.shortTitle ?? 'Unknown',
+    inBalance: account.inBalance,
     creditLimit: account.creditLimit || undefined,
     archived: account.archive || undefined,
     company: undefined, // resolve later if needed
