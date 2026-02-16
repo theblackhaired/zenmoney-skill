@@ -12,6 +12,7 @@ import { registerInstrumentTools } from './tools/instruments.js';
 import { registerAnalyticsTools } from './tools/analytics.js';
 import { registerSuggestTools } from './tools/suggest.js';
 import { registerAuthTools } from './tools/auth.js';
+import { registerReminderWriteTools } from './tools/reminder.js';
 
 export function createServer(config: ClientConfig) {
   const client = new ZenMoneyClient(config);
@@ -33,6 +34,7 @@ export function createServer(config: ClientConfig) {
   registerAnalyticsTools(server, cache);
   registerSuggestTools(server, client);
   registerAuthTools(server, client);
+  registerReminderWriteTools(server, cache);
 
   return {
     async start() {

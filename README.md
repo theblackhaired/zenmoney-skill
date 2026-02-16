@@ -4,7 +4,7 @@ An MCP (Model Context Protocol) server that provides Claude Code with full acces
 
 ## Features
 
-**14 Tools** for complete personal finance management:
+**17 Tools** for complete personal finance management:
 
 **Read Tools:**
 - `get_accounts` - View all accounts with balances and currency information
@@ -20,6 +20,9 @@ An MCP (Model Context Protocol) server that provides Claude Code with full acces
 - `update_transaction` - Modify existing transactions
 - `delete_transaction` - Remove transactions
 - `create_account` - Add new accounts (cash, cards, checking)
+- `create_reminder` - Create recurring scheduled transactions (expenses, income, transfers)
+- `update_reminder` - Modify existing reminders
+- `delete_reminder` - Remove planned transactions
 
 **Analytics:**
 - `get_analytics` - Analyze spending by category, account, or merchant for any date range
@@ -271,6 +274,62 @@ Remove a transaction.
 **Returns:**
 - Confirmation of deletion
 
+### create_reminder
+
+Create a new recurring reminder (планируемая транзакция) for scheduled payments.
+
+**Parameters:**
+- `type` (string, required) - 'expense', 'income', or 'transfer'
+- `amount` (number, required) - Transaction amount (positive number)
+- `account_id` (string, required) - Source/destination account UUID
+- `to_account_id` (string, optional) - Required for transfers
+- `category_ids` (array, optional) - Category UUIDs to apply
+- `payee` (string, optional) - Merchant/payee name
+- `comment` (string, optional) - Additional notes
+- `interval` (string, required) - Recurrence interval: 'day', 'week', 'month', or 'year'
+- `step` (number, optional) - Step multiplier (e.g., 2 for every 2 months). Default: 1
+- `points` (array, optional) - Specific points in interval (e.g., [1,15] for 1st and 15th day of month)
+- `start_date` (string, optional) - Start date in yyyy-MM-dd format. Default: today
+- `end_date` (string, optional) - End date in yyyy-MM-dd format. Optional, null for indefinite
+- `notify` (boolean, optional) - Enable notifications. Default: true
+
+**Returns:**
+- Created reminder object with recurrence details
+
+**Examples:**
+- Monthly rent: `interval='month', step=1, points=[1]` (every 1st day)
+- Bi-weekly salary: `interval='week', step=2` (every 2 weeks)
+- Quarterly payment: `interval='month', step=3` (every 3 months)
+
+### update_reminder
+
+Update an existing reminder. Only provide fields you want to change.
+
+**Parameters:**
+- `id` (string, required) - Reminder UUID
+- `amount` (number, optional) - New amount
+- `category_ids` (array, optional) - Replace categories
+- `payee` (string, optional) - New payee name
+- `comment` (string, optional) - Updated comment
+- `interval` (string, optional) - New interval: 'day', 'week', 'month', or 'year'
+- `step` (number, optional) - New step multiplier
+- `points` (array, optional) - New points array
+- `end_date` (string, optional) - New end date (yyyy-MM-dd)
+- `notify` (boolean, optional) - New notify setting
+
+**Returns:**
+- Updated reminder confirmation
+
+### delete_reminder
+
+Delete a reminder (soft-delete by setting past end date).
+
+**Parameters:**
+- `id` (string, required) - Reminder UUID
+
+**Returns:**
+- Confirmation of deletion
+
 ### get_categories
 
 Browse all categories (tags) in hierarchical structure.
@@ -388,7 +447,8 @@ src/
 │   ├── merchants.ts      # Merchant search tool
 │   ├── instruments.ts    # Currency tool
 │   ├── budgets.ts        # Budget tool
-│   ├── reminders.ts      # Reminder tool
+│   ├── reminders.ts      # Reminder read tool
+│   ├── reminder.ts       # Reminder write tools (create/update/delete)
 │   ├── analytics.ts      # Analytics and aggregation
 │   ├── suggest.ts        # ML suggestion tool
 │   └── auth.ts           # Authentication status check
@@ -468,7 +528,7 @@ The server includes comprehensive error handling:
 - **In-memory cache**: Data is lost when server restarts. No persistent storage.
 - **Single user**: Each server instance serves one ZenMoney account
 - **Sync timing**: Changes made outside MCP may take time to appear (cache depends on diffs)
-- **Read-only operations**: Some ZenMoney features (like reminders creation) are not yet exposed
+- **Account types**: create_account supports only cash, ccard, and checking (no loan/deposit)
 
 ## Troubleshooting
 
