@@ -4,3 +4,4 @@ dist/
 .mcp.json
 *.tgz
 .claude/settings.local.json
+skill/mcp-config.json

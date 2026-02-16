@@ -1,0 +1,10 @@
+{
+  "name": "zenmoney",
+  "command": "node",
+  "args": [
+    "/ABSOLUTE/PATH/TO/zenmoney-mcp/dist/index.js"
+  ],
+  "env": {
+    "ZENMONEY_TOKEN": "YOUR_TOKEN_HERE"
+  }
+}
