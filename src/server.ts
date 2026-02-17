@@ -34,7 +34,7 @@ export function createServer(config: ClientConfig) {
   registerInstrumentTools(server, cache);
   registerAnalyticsTools(server, cache);
   registerSuggestTools(server, client);
-  registerAuthTools(server, client);
+  registerAuthTools(server, client, cache);
   registerReminderWriteTools(server, cache);
   registerBudgetWriteTools(server, cache);
 

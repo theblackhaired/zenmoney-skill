@@ -6,6 +6,22 @@ import { validateMonth, validatePositiveNumber } from '../utils/validation.js';
 
 export function registerBudgetWriteTools(server: McpServer, cache: DataCache): void {
 
+  function findCategoryId(cache: DataCache, category: string): string {
+    if (category.toUpperCase() === 'ALL') {
+      return '00000000-0000-0000-0000-000000000000';
+    }
+    if (cache.tags.has(category)) {
+      return category;
+    }
+    const foundTag = Array.from(cache.tags.values()).find(
+      t => t.title.toLowerCase() === category.toLowerCase()
+    );
+    if (!foundTag) {
+      throw new Error(`Category not found: ${category}`);
+    }
+    return foundTag.id;
+  }
+
   // CREATE/UPDATE BUDGET
   server.tool(
     'create_budget',
@@ -32,26 +48,7 @@ export function registerBudgetWriteTools(server: McpServer, cache: DataCache): v
       }
       const userId = firstAccount.user;
 
-      // Find category by name or UUID
-      let categoryId: string | null = null;
-      if (category.toUpperCase() === 'ALL') {
-        // Aggregate budget
-        categoryId = '00000000-0000-0000-0000-000000000000';
-      } else {
-        // Try to find by UUID first
-        if (cache.tags.has(category)) {
-          categoryId = category;
-        } else {
-          // Search by name
-          const foundTag = Array.from(cache.tags.values()).find(
-            t => t.title.toLowerCase() === category.toLowerCase()
-          );
-          if (!foundTag) {
-            throw new Error(`Category not found: ${category}`);
-          }
-          categoryId = foundTag.id;
-        }
-      }
+      const categoryId = findCategoryId(cache, category);
 
       const monthDate = `${month}-01`;
 
@@ -113,23 +110,7 @@ export function registerBudgetWriteTools(server: McpServer, cache: DataCache): v
 
       await cache.ensureInitialized();
 
-      // Find category
-      let categoryId: string | null = null;
-      if (category.toUpperCase() === 'ALL') {
-        categoryId = '00000000-0000-0000-0000-000000000000';
-      } else {
-        if (cache.tags.has(category)) {
-          categoryId = category;
-        } else {
-          const foundTag = Array.from(cache.tags.values()).find(
-            t => t.title.toLowerCase() === category.toLowerCase()
-          );
-          if (!foundTag) {
-            throw new Error(`Category not found: ${category}`);
-          }
-          categoryId = foundTag.id;
-        }
-      }
+      const categoryId = findCategoryId(cache, category);
 
       const monthDate = `${month}-01`;
       const budgetKey = `${categoryId === '00000000-0000-0000-0000-000000000000' ? 'null' : categoryId}:${monthDate}`;
@@ -189,23 +170,7 @@ export function registerBudgetWriteTools(server: McpServer, cache: DataCache): v
 
       await cache.ensureInitialized();
 
-      // Find category
-      let categoryId: string | null = null;
-      if (category.toUpperCase() === 'ALL') {
-        categoryId = '00000000-0000-0000-0000-000000000000';
-      } else {
-        if (cache.tags.has(category)) {
-          categoryId = category;
-        } else {
-          const foundTag = Array.from(cache.tags.values()).find(
-            t => t.title.toLowerCase() === category.toLowerCase()
-          );
-          if (!foundTag) {
-            throw new Error(`Category not found: ${category}`);
-          }
-          categoryId = foundTag.id;
-        }
-      }
+      const categoryId = findCategoryId(cache, category);
 
       const monthDate = `${month}-01`;
       const budgetKey = `${categoryId === '00000000-0000-0000-0000-000000000000' ? 'null' : categoryId}:${monthDate}`;

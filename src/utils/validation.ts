@@ -12,8 +12,9 @@ export function validateDate(value: string, field: string): void {
   if (!DATE_REGEX.test(value)) {
     throw new Error(`Invalid date format for ${field}: ${value}. Expected yyyy-MM-dd`);
   }
-  const date = new Date(value);
-  if (isNaN(date.getTime())) {
+  const [y, m, d] = value.split('-').map(Number);
+  const date = new Date(y, m - 1, d);
+  if (date.getFullYear() !== y || date.getMonth() !== m - 1 || date.getDate() !== d) {
     throw new Error(`Invalid date for ${field}: ${value}`);
   }
 }

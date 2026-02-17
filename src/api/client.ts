@@ -44,10 +44,13 @@ export class ZenMoneyClient {
     });
 
     if (response.status === 401) {
-      // Token expired — re-authenticate
+      if (!this.credentials) {
+        throw new Error('Token expired. Re-authenticate: run "npm run auth" or get a new token from https://budgera.com/settings/export');
+      }
+      // Token expired — re-authenticate with credentials
       this.token = null;
       await this.ensureAuth();
-      // Retry
+      // Retry once
       const retryResponse = await fetch(`${BASE_URL}${endpoint}`, {
         method: 'POST',
         headers: {

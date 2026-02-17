@@ -74,7 +74,7 @@ export function registerAccountTools(server: McpServer, cache: DataCache): void 
         changed: now,
       };
 
-      const diff = await cache.writeDiff({ account: [newAccount] });
+      await cache.writeDiff({ account: [newAccount] });
       const created = cache.getAccount(newAccount.id);
       return {
         content: [{

@@ -94,8 +94,9 @@ export function registerTransactionTools(server: McpServer, cache: DataCache): v
       payee: z.string().optional().describe('Payee name'),
       comment: z.string().optional().describe('Comment/note'),
       currency_id: z.number().optional().describe('Currency instrument ID if different from account currency'),
+      income_amount: z.number().positive().optional().describe('Income amount for cross-currency transfers (when source and destination have different currencies)'),
     },
-    async ({ type, amount, account_id, to_account_id, category_ids, date, payee, comment, currency_id }) => {
+    async ({ type, amount, account_id, to_account_id, category_ids, date, payee, comment, currency_id, income_amount }) => {
       validateUUID(account_id, 'account_id');
       if (to_account_id) validateUUID(to_account_id, 'to_account_id');
       if (category_ids) category_ids.forEach((id, i) => validateUUID(id, `category_ids[${i}]`));
@@ -172,9 +173,14 @@ export function registerTransactionTools(server: McpServer, cache: DataCache): v
           tx.outcome = amount;
           tx.outcomeAccount = account_id;
           tx.outcomeInstrument = account.instrument;
-          tx.income = amount;
           tx.incomeAccount = to_account_id!;
           tx.incomeInstrument = toAccount.instrument;
+          if (account.instrument !== toAccount.instrument) {
+            if (!income_amount) throw new Error('income_amount is required for cross-currency transfers');
+            tx.income = income_amount;
+          } else {
+            tx.income = amount;
+          }
           break;
         }
       }
