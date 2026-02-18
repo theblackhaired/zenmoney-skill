@@ -1,8 +1,6 @@
-node_modules/
-dist/
+.cache.json
+config.json
+__pycache__/
+*.pyc
 .env
 .mcp.json
-*.tgz
-.claude/settings.local.json
-skill/mcp-config.json
-skill/PROFILE.md
