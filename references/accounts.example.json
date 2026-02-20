@@ -1,0 +1,50 @@
+{
+  "generated": "2026-01-01",
+  "total": 3,
+  "active": 2,
+  "in_balance": 1,
+  "accounts": [
+    {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "title": "Основная карта",
+      "bank": "Банк",
+      "type": "ccard",
+      "subtype": "debit",
+      "inBalance": true,
+      "balance": 15000,
+      "creditLimit": 0,
+      "currency": "RUB",
+      "savings": false,
+      "archived": false,
+      "description": "Основной расчётный счёт, приход ЗП"
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000002",
+      "title": "Накопительный",
+      "bank": "Банк",
+      "type": "checking",
+      "subtype": "savings",
+      "inBalance": true,
+      "balance": 50000,
+      "creditLimit": 0,
+      "currency": "RUB",
+      "savings": true,
+      "archived": false,
+      "description": "Накопления, подушка безопасности"
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000003",
+      "title": "Кредитка",
+      "bank": "Банк",
+      "type": "ccard",
+      "subtype": "credit",
+      "inBalance": true,
+      "balance": -10000,
+      "creditLimit": 100000,
+      "currency": "RUB",
+      "savings": false,
+      "archived": false,
+      "description": "Крупные покупки, рассрочки"
+    }
+  ]
+}

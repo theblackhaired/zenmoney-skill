@@ -597,6 +597,10 @@ TOOL_DOCS: dict[str, dict] = {
             "offset": "int (default 0)",
         },
     },
+    "rebuild_references": {
+        "desc": "Rebuild reference cache files (accounts.json, categories.json) from ZenMoney data. Run after account/category changes.",
+        "params": {},
+    },
     "analyze_budget_detailed": {
         "desc": "Detailed budget analysis with income vs expenses breakdown by category, plan vs fact comparison, payment calendar, and balance forecast",
         "params": {
@@ -1033,6 +1037,136 @@ async def tool_get_reminders(args: dict) -> str:
         output["showing"] = len(result_list)
         output["offset"] = offset
     return json.dumps(output, ensure_ascii=False)
+
+
+async def tool_rebuild_references(args: dict) -> str:
+    REFS_DIR.mkdir(exist_ok=True)
+
+    # --- Load manual account metadata (descriptions, roles) ---
+    meta_path = REFS_DIR / "account_meta.json"
+    account_meta: dict[str, dict] = {}
+    if meta_path.exists():
+        try:
+            account_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    # --- accounts.json ---
+    accounts_out = []
+    for a in CACHE.data.get("account", {}).values():
+        company = CACHE.data.get("company", {}).get(str(a.get("company", "")), {})
+        instr = CACHE.data.get("instrument", {}).get(str(a.get("instrument", "")), {})
+
+        # Determine subtype
+        atype = a.get("type", "")
+        credit_limit = a.get("creditLimit", 0)
+        savings = a.get("savings", False)
+        if atype == "ccard" and credit_limit > 0:
+            subtype = "credit"
+        elif atype == "ccard":
+            subtype = "debit"
+        elif atype == "checking" and savings:
+            subtype = "savings"
+        elif atype == "checking":
+            subtype = "checking"
+        elif atype == "cash":
+            subtype = "cash"
+        elif atype == "debt":
+            subtype = "debt"
+        else:
+            subtype = atype
+
+        accounts_out.append({
+            "id": a["id"],
+            "title": a.get("title", ""),
+            "bank": company.get("title"),
+            "type": atype,
+            "subtype": subtype,
+            "inBalance": a.get("inBalance", False),
+            "balance": a.get("balance", 0),
+            "creditLimit": credit_limit,
+            "currency": instr.get("shortTitle", "?"),
+            "savings": savings,
+            "archived": a.get("archive", False),
+            "description": account_meta.get(a["id"], {}).get("description"),
+        })
+
+    accounts_out.sort(key=lambda x: (x["archived"], not x["inBalance"], x["title"]))
+    accounts_data = {
+        "generated": _today(),
+        "total": len(accounts_out),
+        "active": len([a for a in accounts_out if not a["archived"]]),
+        "in_balance": len([a for a in accounts_out if a["inBalance"] and not a["archived"]]),
+        "accounts": accounts_out,
+    }
+    (REFS_DIR / "accounts.json").write_text(
+        json.dumps(accounts_data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    # --- categories.json ---
+    tags = list(CACHE.data.get("tag", {}).values())
+    parents = [t for t in tags if not t.get("parent")]
+    children_map: dict[str, list] = {}
+    for t in tags:
+        pid = t.get("parent")
+        if pid:
+            children_map.setdefault(pid, []).append(t)
+
+    # Build hierarchical structure with parent_id in children
+    categories_out = []
+    for p in sorted(parents, key=lambda t: t.get("title", "")):
+        kids = children_map.get(p["id"], [])
+        cat = {
+            "id": p["id"],
+            "title": p.get("title", ""),
+            "children": [
+                {"id": c["id"], "title": c.get("title", ""), "parent_id": p["id"]}
+                for c in sorted(kids, key=lambda c: c.get("title", ""))
+            ],
+        }
+        categories_out.append(cat)
+
+    # Build flat index for fast lookup
+    index = {}
+    for p in parents:
+        index[p["id"]] = {
+            "title": p.get("title", ""),
+            "parent_id": None,
+            "parent_title": None,
+            "is_parent": True,
+            "children_count": len(children_map.get(p["id"], [])),
+        }
+
+    for t in tags:
+        if t.get("parent"):
+            parent = next((p for p in parents if p["id"] == t["parent"]), None)
+            index[t["id"]] = {
+                "title": t.get("title", ""),
+                "parent_id": t["parent"],
+                "parent_title": parent.get("title", "") if parent else None,
+                "is_parent": False,
+                "children_count": 0,
+            }
+
+    categories_data = {
+        "generated": _today(),
+        "total": len(tags),
+        "parents": len(parents),
+        "categories": categories_out,
+        "index": index,
+    }
+    (REFS_DIR / "categories.json").write_text(
+        json.dumps(categories_data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    return json.dumps({
+        "status": "ok",
+        "generated": _today(),
+        "accounts": f"{len(accounts_out)} accounts ({accounts_data['active']} active, {accounts_data['in_balance']} in balance)",
+        "categories": f"{len(tags)} categories ({len(parents)} parent, {len(tags) - len(parents)} child, {len(index)} indexed)",
+        "files": ["references/accounts.json", "references/categories.json"],
+        "features": ["parent_id in children", "flat index for fast lookup"],
+    }, ensure_ascii=False)
 
 
 def calculate_initial_balance(data: dict, period_start_date: str) -> float:
@@ -2618,6 +2752,7 @@ HANDLERS: dict[str, Any] = {
     "get_instruments": tool_get_instruments,
     "get_budgets": tool_get_budgets,
     "get_reminders": tool_get_reminders,
+    "rebuild_references": tool_rebuild_references,
     "analyze_budget_detailed": tool_analyze_budget_detailed,
     "setup_budget_mode": tool_setup_budget_mode,
     "get_analytics": tool_get_analytics,
