@@ -235,6 +235,36 @@ python3 scripts/cli.py --call '{"tool":"get_reminders","arguments":{"marker_from
 
 ## CHANGELOG
 
+### 2026-02-20 - Configurable Budget Modes System
+
+**Критическое исправление:**
+- Исправлен баг с отсутствующими метаданными (type, subtype, savings) в actual transfer items, из-за которого classify_transfer возвращал None для всех реальных переводов
+
+**Новая функциональность:**
+- Система конфигурируемых режимов анализа бюджета с двумя предустановками:
+  - **"Доходы vs Расходы" (income_vs_expense)** — исключает лишние переводы, учитывает только погашения долгов (кредитки, рассрочки)
+  - **"Баланс vs Расходы (balance_vs_expense)** — учитывает все движения денег, включая счета вне баланса
+- Гибкая конфигурация компонентов через `config.json` → `budget_modes` с индивидуальными флагами для каждого типа перевода
+- Новый параметр `budget_mode` в `analyze_budget_detailed` для переключения режимов
+- Флаг `count_all_movements` для Режима 1 (игнорирует проверки inBalance)
+
+**Рефакторинг:**
+- Вынесена `classify_transfer()` на уровень модуля с сигнатурой `classify_transfer(item: dict, mode_config: dict) -> tuple | None`
+- Добавлены константы `DEFAULT_BALANCE_VS_EXPENSE` и `DEFAULT_INCOME_VS_EXPENSE` для fallback
+- Логика классификации переводов теперь управляется флагами из конфигурации
+
+**Классификация переводов:**
+Режим "Доходы vs Расходы" учитывает:
+- Расходы: только переводы на credit счета (погашения кредиток/рассрочек)
+- Исключает: транзитные debit off-balance счета (HML.APP), переводы между своими счетами
+
+Режим "Баланс vs Расходы" учитывает:
+- Все переводы: credit, savings, debt, off-balance
+- Все движения денег независимо от флагов inBalance
+
+**Вывод:**
+- Добавлены поля `budget_mode` и `budget_mode_label` в summary для отображения активного режима
+
 ### 2026-02-20 - Budget Analysis Tool
 
 **Новый инструмент:**

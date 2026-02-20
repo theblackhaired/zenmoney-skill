@@ -329,6 +329,123 @@ def _reminder_type(r: dict) -> str:
     return "unknown"
 
 
+# ---------------------------------------------------------------------------
+# Budget mode defaults
+# ---------------------------------------------------------------------------
+DEFAULT_BALANCE_VS_EXPENSE: dict[str, Any] = {
+    "label": "Баланс vs Расходы",
+    "description": "Учитываются все движения денег по счетам, включая счета вне баланса",
+    "count_all_movements": True,
+    "income": {
+        "from_savings": True,
+        "from_credit": True,
+        "from_debt": True,
+        "from_other_off_balance": True,
+    },
+    "expense": {
+        "to_savings": True,
+        "to_credit": True,
+        "to_debt": True,
+        "to_other_off_balance": True,
+    },
+}
+
+DEFAULT_INCOME_VS_EXPENSE: dict[str, Any] = {
+    "label": "Доходы vs Расходы",
+    "description": "Исключает лишние переводы из расчётов",
+    "count_all_movements": False,
+    "income": {
+        "from_savings": True,
+        "from_credit": False,
+        "from_debt": False,
+        "from_other_off_balance": False,
+    },
+    "expense": {
+        "to_savings": False,
+        "to_credit": True,
+        "to_debt": False,
+        "to_other_off_balance": False,
+    },
+}
+
+_BUDGET_MODE_DEFAULTS: dict[str, dict[str, Any]] = {
+    "balance_vs_expense": DEFAULT_BALANCE_VS_EXPENSE,
+    "income_vs_expense": DEFAULT_INCOME_VS_EXPENSE,
+}
+
+
+def classify_transfer(item: dict, mode_config: dict) -> tuple[str, float] | None:
+    """Classify a transfer as ('expense', amount), ('income', amount), or None.
+
+    Uses *mode_config* flags to decide which transfers count.
+    """
+    to_type = item.get("to_account_type")
+    to_subtype = item.get("to_account_subtype")
+    to_savings = item.get("to_account_savings", False)
+
+    from_type = item.get("from_account_type")
+    from_subtype = item.get("from_account_subtype")
+    from_savings = item.get("from_account_savings", False)
+
+    from_in_balance = item.get("from_in_balance", False)
+    to_in_balance = item.get("to_in_balance", False)
+
+    count_all = mode_config.get("count_all_movements", False)
+    expense_cfg = mode_config.get("expense", {})
+    income_cfg = mode_config.get("income", {})
+
+    amount = item.get("amount", 0)
+
+    # --- Expense checks (outflows) ---
+
+    # 1. Transfer TO credit account (debt repayment)
+    if to_subtype == "credit" and expense_cfg.get("to_credit", False):
+        if count_all or from_in_balance:
+            return ("expense", amount)
+
+    # 2. Transfer TO loan/debt account (debt repayment)
+    if to_type in ("loan", "debt") and expense_cfg.get("to_debt", False):
+        if count_all or from_in_balance:
+            return ("expense", amount)
+
+    # 3. Transfer TO savings account (withdrawal from circulation)
+    if (to_subtype == "savings" or to_savings) and expense_cfg.get("to_savings", False):
+        if count_all or from_in_balance:
+            return ("expense", amount)
+
+    # --- Income checks (inflows) ---
+
+    # 4. Transfer FROM savings account (return to circulation)
+    if (from_subtype == "savings" or from_savings) and income_cfg.get("from_savings", False):
+        if count_all or to_in_balance:
+            return ("income", amount)
+
+    # 5. Transfer FROM credit account
+    if from_subtype == "credit" and income_cfg.get("from_credit", False):
+        if count_all or to_in_balance:
+            return ("income", amount)
+
+    # 6. Transfer FROM loan/debt account
+    if from_type in ("loan", "debt") and income_cfg.get("from_debt", False):
+        if count_all or to_in_balance:
+            return ("income", amount)
+
+    # --- Generic off-balance checks ---
+
+    # 7. Generic off-balance outflow (from inBalance to off-balance)
+    if expense_cfg.get("to_other_off_balance", False):
+        if count_all or (from_in_balance and not to_in_balance):
+            return ("expense", amount)
+
+    # 8. Generic off-balance inflow (from off-balance to inBalance)
+    if income_cfg.get("from_other_off_balance", False):
+        if count_all or (not from_in_balance and to_in_balance):
+            return ("income", amount)
+
+    # 9. No balance impact
+    return None
+
+
 def _fmt_transaction(t: dict) -> dict:
     tt = _tx_type(t)
     out_acct = CACHE.get_account(t.get("outcomeAccount", ""))
@@ -476,6 +593,7 @@ TOOL_DOCS: dict[str, dict] = {
             "start_date": "str yyyy-MM-dd (optional, auto-calculated from billing_period_start_day if not provided)",
             "end_date": "str yyyy-MM-dd (optional, auto-calculated from billing_period_start_day if not provided)",
             "include_off_balance": "bool (default false) — include accounts with inBalance=false",
+            "budget_mode": "str balance_vs_expense|income_vs_expense (default from config or income_vs_expense) — controls which transfers count as income/expense",
             "group_by": "str category|date (default category)",
             "show_forecast": "bool (default true) — show daily balance forecast",
             "show_calendar": "bool (default true) — show payment calendar",
@@ -1055,6 +1173,21 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
         except Exception:
             pass
 
+    # Load config for billing period and budget mode
+    cfg_path = ROOT / "config.json"
+    config: dict[str, Any] = {}
+    if cfg_path.exists():
+        try:
+            config = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    # Resolve budget mode
+    mode_name = _g("budget_mode", args) or config.get("budget_mode") or "income_vs_expense"
+    mode_config = config.get("budget_modes", {}).get(mode_name)
+    if not mode_config:
+        mode_config = _BUDGET_MODE_DEFAULTS.get(mode_name, DEFAULT_INCOME_VS_EXPENSE)
+
     # Determine period from billing_period_start_day or use provided dates
     include_off_balance = _g("include_off_balance", args, False)
     show_forecast = _g("show_forecast", args, True)
@@ -1069,14 +1202,7 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
             _validate_date(end_date, "end_date")
     else:
         # Auto-calculate from billing_period_start_day
-        cfg_path = ROOT / "config.json"
-        billing_start_day = 1
-        if cfg_path.exists():
-            try:
-                cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-                billing_start_day = cfg.get("billing_period_start_day", 1)
-            except Exception:
-                pass
+        billing_start_day = config.get("billing_period_start_day", 1)
 
         today = datetime.date.today()
         if today.day >= billing_start_day:
@@ -1394,6 +1520,12 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
             "status": "completed",
             "from_in_balance": from_in_balance,
             "to_in_balance": to_in_balance,
+            "from_account_type": from_acct.get("type"),
+            "from_account_subtype": from_acct.get("subtype"),
+            "from_account_savings": from_acct.get("savings", False),
+            "to_account_type": to_acct.get("type"),
+            "to_account_subtype": to_acct.get("subtype"),
+            "to_account_savings": to_acct.get("savings", False),
         })
 
     # Add planned transfers from reminders
@@ -1423,35 +1555,44 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
                 "status": marker.get("state", "planned"),
                 "from_in_balance": from_in_balance,
                 "to_in_balance": to_in_balance,
+                "from_account_type": from_acct.get("type"),
+                "from_account_subtype": from_acct.get("subtype"),
+                "from_account_savings": from_acct.get("savings", False),
+                "to_account_type": to_acct.get("type"),
                 "to_account_subtype": to_acct.get("subtype"),
+                "to_account_savings": to_acct.get("savings", False),
             })
 
     # Calculate totals
     total_income_actual = sum(c["actual"] for c in income_by_category.values())
     total_income_planned = sum(c["planned"] for c in income_by_category.values())
-    total_expense_actual = sum(c["actual"] for c in expense_by_category.values())
-    total_expense_planned = sum(c["planned_from_reminders"] + c["budget"] for c in expense_by_category.values())
 
-    # Calculate transfer totals (only credit card payments and installments)
-    # Only count transfers from inBalance to credit accounts (subtype == "credit")
-    # AND with comments containing "погашение", "рассрочка", or "кредит" (case-insensitive)
-    # This excludes transfers to debit off-balance accounts like HML.APP
-    # and initial installment payments without these keywords
-    def is_credit_payment(item):
-        if not (item["from_in_balance"] and not item["to_in_balance"] and item.get("to_account_subtype") == "credit"):
-            return False
-        comment = (item.get("comment") or "").lower()
-        return any(kw in comment for kw in ["погашение", "рассрочка", "кредит"])
-
-    total_transfers = sum(
-        item["amount"]
-        for item in transfer_items
-        if is_credit_payment(item)
+    # For expenses, use max(actual + planned_from_reminders, budget) for each category
+    # This prevents double-counting when actual spending is within budget
+    total_expense_expected = sum(
+        max(c["actual"] + c["planned_from_reminders"], c["budget"])
+        for c in expense_by_category.values()
     )
+
+    # Calculate transfer totals using mode-aware classify_transfer
+    total_transfers_out = 0
+    total_transfers_in = 0
+    for item in transfer_items:
+        result = classify_transfer(item, mode_config)
+        if result:
+            transfer_type, amount = result
+            if transfer_type == "expense":
+                total_transfers_out += amount
+            elif transfer_type == "income":
+                total_transfers_in += amount
+
+    total_transfers_net = total_transfers_out - total_transfers_in
 
     # Build output
     result = {
         "summary": {
+            "budget_mode": mode_name,
+            "budget_mode_label": mode_config.get("label", mode_name),
             "period": {"start": start_date, "end": end_date},
             "income": {
                 "actual": total_income_actual,
@@ -1459,18 +1600,19 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
                 "total": total_income_actual + total_income_planned,
             },
             "expense": {
-                "actual": total_expense_actual,
-                "planned": total_expense_planned,
-                "total": total_expense_actual + total_expense_planned,
+                "expected": total_expense_expected,
+                "description": "max(actual + planned_from_reminders, budget) per category",
             },
             "transfers": {
-                "total": total_transfers,
-                "description": "Transfers from inBalance to off-balance accounts (e.g., credit card payments)",
+                "out": total_transfers_out,
+                "in": total_transfers_in,
+                "net": total_transfers_net,
+                "description": "Net transfers based on account types (credit, savings, debt) and inBalance flags",
             },
-            "balance": (total_income_actual + total_income_planned) - (total_expense_actual + total_expense_planned) - total_transfers,
+            "balance": (total_income_actual + total_income_planned) - total_expense_expected - total_transfers_net,
         },
         "income": sorted(income_by_category.values(), key=lambda x: x["actual"] + x["planned"], reverse=True),
-        "expenses": sorted(expense_by_category.values(), key=lambda x: x["actual"] + x["planned_from_reminders"] + x["budget"], reverse=True),
+        "expenses": sorted(expense_by_category.values(), key=lambda x: max(x["actual"] + x["planned_from_reminders"], x["budget"]), reverse=True),
         "transfers": sorted(transfer_items, key=lambda x: x["date"]),
     }
 
