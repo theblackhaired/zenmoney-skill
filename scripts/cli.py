@@ -40,6 +40,7 @@ if _cfg_path.exists():
 TOKEN = os.environ.get("ZENMONEY_TOKEN", "")
 BASE_URL = "https://api.zenmoney.ru"
 CACHE_PATH = ROOT / ".cache.json"
+REFS_DIR = ROOT / "references"
 
 # ---------------------------------------------------------------------------
 # Validation helpers
@@ -312,6 +313,22 @@ def _tx_type(t: dict) -> str:
     return "unknown"
 
 
+def _reminder_type(r: dict) -> str:
+    """Determine reminder type: expense, income, transfer, or unknown."""
+    is_transfer = (
+        r.get("outcomeAccount") != r.get("incomeAccount")
+        and r.get("outcome", 0) > 0
+        and r.get("income", 0) > 0
+    )
+    if is_transfer:
+        return "transfer"
+    if r.get("outcome", 0) > 0 and r.get("income", 0) == 0:
+        return "expense"
+    if r.get("income", 0) > 0 and r.get("outcome", 0) == 0:
+        return "income"
+    return "unknown"
+
+
 def _fmt_transaction(t: dict) -> dict:
     tt = _tx_type(t)
     out_acct = CACHE.get_account(t.get("outcomeAccount", ""))
@@ -436,14 +453,22 @@ TOOL_DOCS: dict[str, dict] = {
         "params": {"month": "str yyyy-MM (required)"},
     },
     "get_reminders": {
-        "desc": "Get scheduled payment reminders with their markers",
+        "desc": "Get scheduled payment reminders with their markers. When marker_from/marker_to are specified, filters reminders by marker dates in that period and sorts by first marker date. Without these params, uses legacy sort by startDate.",
         "params": {
+            "marker_from": "str yyyy-MM-dd (optional) — start of marker date range (inclusive)",
+            "marker_to": "str yyyy-MM-dd (optional) — end of marker date range (inclusive)",
+            "category": "str (optional) — filter by category name",
+            "type": "str expense|income|transfer|all (optional, default all) — filter by operation type",
             "include_processed": "bool (default false)",
             "active_only": "bool (default true)",
             "limit": "int (default 50)",
-            "markers_limit": "int (default 5)",
+            "markers_limit": "int (default 5) — max markers per reminder (only used in legacy mode without marker_from/marker_to)",
             "offset": "int (default 0)",
         },
+    },
+    "rebuild_references": {
+        "desc": "Rebuild reference cache files (accounts.json, categories.json) from ZenMoney data. Run after account/category changes.",
+        "params": {},
     },
     "get_analytics": {
         "desc": "Spending/income analytics grouped by category, account, or merchant",
@@ -763,11 +788,78 @@ async def tool_get_reminders(args: dict) -> str:
     limit = int(_g("limit", args, 50))
     markers_limit = int(_g("markers_limit", args, 5))
     offset = int(_g("offset", args, 0))
+    marker_from = _g("marker_from", args)
+    marker_to = _g("marker_to", args)
+    category = _g("category", args)
+    r_type = _g("type", args, "all")
     today_str = _today()
+
+    if marker_from:
+        _validate_date(marker_from, "marker_from")
+    if marker_to:
+        _validate_date(marker_to, "marker_to")
 
     reminders = CACHE.reminders()
     if active_only:
         reminders = [r for r in reminders if not r.get("endDate") or r["endDate"] >= today_str]
+
+    # Filter by category
+    if category:
+        filtered = []
+        for r in reminders:
+            tags = r.get("tag") or []
+            cat_names = []
+            for tid in tags:
+                tag = CACHE.get_tag(tid)
+                if tag:
+                    cat_names.append(tag["title"])
+            if category in cat_names:
+                filtered.append(r)
+        reminders = filtered
+
+    # Filter by type
+    if r_type and r_type != "all":
+        reminders = [r for r in reminders if _reminder_type(r) == r_type]
+
+    # Marker-based filtering mode
+    if marker_from and marker_to:
+        all_markers = CACHE.reminder_markers()
+        result_list = []
+        for r in reminders:
+            markers = [m for m in all_markers if m.get("reminder") == r["id"]]
+            if not include_processed:
+                markers = [m for m in markers if m.get("state") == "planned"]
+            # Filter markers to the requested date range
+            markers = [m for m in markers if marker_from <= m.get("date", "") <= marker_to]
+            if not markers:
+                continue
+            markers.sort(key=lambda m: m.get("date", ""))
+            fmt = _fmt_reminder(r)
+            fmt["type"] = _reminder_type(r)
+            fmt["markers"] = [
+                {"id": m["id"], "date": m.get("date"), "state": m.get("state"),
+                 "income": m.get("income", 0), "outcome": m.get("outcome", 0)}
+                for m in markers
+            ]
+            fmt["markers_total_outcome"] = sum(m.get("outcome", 0) for m in markers)
+            fmt["markers_total_income"] = sum(m.get("income", 0) for m in markers)
+            fmt["_sort_key"] = markers[0].get("date", "")
+            result_list.append(fmt)
+
+        result_list.sort(key=lambda x: x.pop("_sort_key"))
+        total = len(result_list)
+        eff_limit = min(limit, 200)
+        result_list = result_list[offset:offset + eff_limit]
+
+        output: dict[str, Any] = {"reminders": result_list, "mode": "marker_range", "marker_from": marker_from, "marker_to": marker_to}
+        if total > offset + len(result_list):
+            output["truncated"] = True
+        output["total"] = total
+        output["showing"] = len(result_list)
+        output["offset"] = offset
+        return json.dumps(output, ensure_ascii=False)
+
+    # Legacy mode — sort by startDate
     reminders.sort(key=lambda r: r.get("startDate", ""), reverse=True)
     total = len(reminders)
     eff_limit = min(limit, 200)
@@ -776,6 +868,7 @@ async def tool_get_reminders(args: dict) -> str:
     result_list = []
     for r in reminders:
         fmt = _fmt_reminder(r)
+        fmt["type"] = _reminder_type(r)
         markers = [m for m in CACHE.reminder_markers() if m.get("reminder") == r["id"]]
         if not include_processed:
             markers = [m for m in markers if m.get("state") == "planned"]
@@ -790,12 +883,117 @@ async def tool_get_reminders(args: dict) -> str:
         result_list.append(fmt)
 
     output: dict[str, Any] = {"reminders": result_list}
-    if total > offset + len(reminders):
+    if total > offset + len(result_list):
         output["truncated"] = True
         output["total"] = total
-        output["showing"] = len(reminders)
+        output["showing"] = len(result_list)
         output["offset"] = offset
     return json.dumps(output, ensure_ascii=False)
+
+
+async def tool_rebuild_references(args: dict) -> str:
+    REFS_DIR.mkdir(exist_ok=True)
+
+    # --- Load manual account metadata (descriptions, roles) ---
+    meta_path = REFS_DIR / "account_meta.json"
+    account_meta: dict[str, dict] = {}
+    if meta_path.exists():
+        try:
+            account_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    # --- accounts.json ---
+    accounts_out = []
+    for a in CACHE.data.get("account", {}).values():
+        company = CACHE.data.get("company", {}).get(str(a.get("company", "")), {})
+        instr = CACHE.data.get("instrument", {}).get(str(a.get("instrument", "")), {})
+
+        # Determine subtype
+        atype = a.get("type", "")
+        credit_limit = a.get("creditLimit", 0)
+        savings = a.get("savings", False)
+        if atype == "ccard" and credit_limit > 0:
+            subtype = "credit"
+        elif atype == "ccard":
+            subtype = "debit"
+        elif atype == "checking" and savings:
+            subtype = "savings"
+        elif atype == "checking":
+            subtype = "checking"
+        elif atype == "cash":
+            subtype = "cash"
+        elif atype == "debt":
+            subtype = "debt"
+        else:
+            subtype = atype
+
+        accounts_out.append({
+            "id": a["id"],
+            "title": a.get("title", ""),
+            "bank": company.get("title"),
+            "type": atype,
+            "subtype": subtype,
+            "inBalance": a.get("inBalance", False),
+            "balance": a.get("balance", 0),
+            "creditLimit": credit_limit,
+            "currency": instr.get("shortTitle", "?"),
+            "savings": savings,
+            "archived": a.get("archive", False),
+            "description": account_meta.get(a["id"], {}).get("description"),
+        })
+
+    accounts_out.sort(key=lambda x: (x["archived"], not x["inBalance"], x["title"]))
+    accounts_data = {
+        "generated": _today(),
+        "total": len(accounts_out),
+        "active": len([a for a in accounts_out if not a["archived"]]),
+        "in_balance": len([a for a in accounts_out if a["inBalance"] and not a["archived"]]),
+        "accounts": accounts_out,
+    }
+    (REFS_DIR / "accounts.json").write_text(
+        json.dumps(accounts_data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    # --- categories.json ---
+    tags = list(CACHE.data.get("tag", {}).values())
+    parents = [t for t in tags if not t.get("parent")]
+    children_map: dict[str, list] = {}
+    for t in tags:
+        pid = t.get("parent")
+        if pid:
+            children_map.setdefault(pid, []).append(t)
+
+    categories_out = []
+    for p in sorted(parents, key=lambda t: t.get("title", "")):
+        kids = children_map.get(p["id"], [])
+        cat = {
+            "id": p["id"],
+            "title": p.get("title", ""),
+            "children": [
+                {"id": c["id"], "title": c.get("title", "")}
+                for c in sorted(kids, key=lambda c: c.get("title", ""))
+            ],
+        }
+        categories_out.append(cat)
+
+    categories_data = {
+        "generated": _today(),
+        "total": len(tags),
+        "parents": len(parents),
+        "categories": categories_out,
+    }
+    (REFS_DIR / "categories.json").write_text(
+        json.dumps(categories_data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    return json.dumps({
+        "status": "ok",
+        "generated": _today(),
+        "accounts": f"{len(accounts_out)} accounts ({accounts_data['active']} active, {accounts_data['in_balance']} in balance)",
+        "categories": f"{len(tags)} categories ({len(parents)} parent, {len(tags) - len(parents)} child)",
+        "files": ["references/accounts.json", "references/categories.json"],
+    }, ensure_ascii=False)
 
 
 async def tool_get_analytics(args: dict) -> str:
@@ -1505,6 +1703,7 @@ HANDLERS: dict[str, Any] = {
     "get_instruments": tool_get_instruments,
     "get_budgets": tool_get_budgets,
     "get_reminders": tool_get_reminders,
+    "rebuild_references": tool_rebuild_references,
     "get_analytics": tool_get_analytics,
     "suggest": tool_suggest,
     "get_merchants": tool_get_merchants,
