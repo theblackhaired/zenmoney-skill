@@ -501,7 +501,11 @@ def _fmt_transaction(t: dict) -> dict:
 
 def _fmt_budget(b: dict) -> dict:
     tag = CACHE.get_tag(b["tag"]) if b.get("tag") else None
-    return {
+    parent_tag = None
+    if tag and tag.get("parent"):
+        parent_tag = CACHE.get_tag(tag["parent"])
+
+    result = {
         "category": tag["title"] if tag else ("Total" if b.get("tag") is None else b.get("tag")),
         "month": b.get("date", ""),
         "income": b.get("income", 0),
@@ -509,6 +513,11 @@ def _fmt_budget(b: dict) -> dict:
         "outcome": b.get("outcome", 0),
         "outcomeLock": b.get("outcomeLock", False),
     }
+
+    if parent_tag:
+        result["parent_category"] = parent_tag["title"]
+
+    return result
 
 
 def _fmt_reminder(r: dict) -> dict:
