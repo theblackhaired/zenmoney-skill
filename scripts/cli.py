@@ -592,11 +592,16 @@ TOOL_DOCS: dict[str, dict] = {
         "params": {
             "start_date": "str yyyy-MM-dd (optional, auto-calculated from billing_period_start_day if not provided)",
             "end_date": "str yyyy-MM-dd (optional, auto-calculated from billing_period_start_day if not provided)",
-            "include_off_balance": "bool (default false) — include accounts with inBalance=false",
             "budget_mode": "str balance_vs_expense|income_vs_expense (default from config or income_vs_expense) — controls which transfers count as income/expense",
             "group_by": "str category|date (default category)",
             "show_forecast": "bool (default true) — show daily balance forecast",
             "show_calendar": "bool (default true) — show payment calendar",
+        },
+    },
+    "setup_budget_mode": {
+        "desc": "Setup budget mode configuration (balance_vs_expense or income_vs_expense)",
+        "params": {
+            "mode": "str balance_vs_expense|income_vs_expense (required) — budget mode to set",
         },
     },
     "get_analytics": {
@@ -1182,6 +1187,22 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
         except Exception:
             pass
 
+    # Check if budget mode is configured
+    if not config.get("budget_mode_configured", False):
+        budget_modes_config = config.get("budget_modes", {})
+        modes = []
+        for mode_id, mode_data in budget_modes_config.items():
+            modes.append({
+                "id": mode_id,
+                "label": mode_data.get("label", mode_id),
+                "description": mode_data.get("description", "")
+            })
+        return json.dumps({
+            "setup_required": True,
+            "message": "Необходимо выбрать режим работы с бюджетом",
+            "modes": modes
+        }, ensure_ascii=False, indent=2)
+
     # Resolve budget mode
     mode_name = _g("budget_mode", args) or config.get("budget_mode") or "income_vs_expense"
     mode_config = config.get("budget_modes", {}).get(mode_name)
@@ -1189,7 +1210,6 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
         mode_config = _BUDGET_MODE_DEFAULTS.get(mode_name, DEFAULT_INCOME_VS_EXPENSE)
 
     # Determine period from billing_period_start_day or use provided dates
-    include_off_balance = _g("include_off_balance", args, False)
     show_forecast = _g("show_forecast", args, True)
     show_calendar = _g("show_calendar", args, True)
 
@@ -1311,9 +1331,9 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
         if tt != "income":
             continue
 
-        # Check if account is in balance
+        # Check if account should be counted based on mode
         acct_id = tx.get("incomeAccount")
-        if not include_off_balance:
+        if not mode_config.get("count_all_movements", False):
             acct = accounts_map.get(acct_id, {})
             if not acct.get("inBalance", False):
                 continue
@@ -1347,8 +1367,8 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
         cat_meta = enrich_category(cat_id)
         cat_key = cat_meta["category_id"]
 
-        # Check account
-        if not include_off_balance:
+        # Check account based on mode
+        if not mode_config.get("count_all_movements", False):
             acct = accounts_map.get(rem.get("account_id"), {})
             if not acct.get("inBalance", False):
                 continue
@@ -1380,9 +1400,9 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
         if tt != "expense":
             continue
 
-        # Check if account is in balance
+        # Check if account should be counted based on mode
         acct_id = tx.get("outcomeAccount")
-        if not include_off_balance:
+        if not mode_config.get("count_all_movements", False):
             acct = accounts_map.get(acct_id, {})
             if not acct.get("inBalance", False):
                 continue
@@ -1417,8 +1437,8 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
         cat_meta = enrich_category(cat_id)
         cat_key = cat_meta["category_id"]
 
-        # Check account
-        if not include_off_balance:
+        # Check account based on mode
+        if not mode_config.get("count_all_movements", False):
             acct = accounts_map.get(rem.get("account_id"), {})
             if not acct.get("inBalance", False):
                 continue
@@ -1502,13 +1522,13 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
         from_in_balance = from_acct.get("inBalance", False)
         to_in_balance = to_acct.get("inBalance", False)
 
-        # Skip if both are off-balance and we're not including off-balance
-        if not include_off_balance and not from_in_balance and not to_in_balance:
+        # Skip if both are off-balance and we're not in count_all_movements mode
+        if not mode_config.get("count_all_movements", False) and not from_in_balance and not to_in_balance:
             continue
 
         # Transfer affects balance if:
         # - From inBalance to off-balance (outflow)
-        # - From off-balance to inBalance (inflow) - only if include_off_balance
+        # - From off-balance to inBalance (inflow) - when count_all_movements=true
         # - Between inBalance accounts (no net effect on total balance, but show in calendar)
 
         transfer_items.append({
@@ -1539,7 +1559,7 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
         from_in_balance = from_acct.get("inBalance", False)
         to_in_balance = to_acct.get("inBalance", False)
 
-        if not include_off_balance and not from_in_balance and not to_in_balance:
+        if not mode_config.get("count_all_movements", False) and not from_in_balance and not to_in_balance:
             continue
 
         for marker in rem["markers"]:
@@ -1662,7 +1682,7 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
         current_balance = sum(
             a.get("balance", 0)
             for a in accounts_map.values()
-            if include_off_balance or a.get("inBalance", False)
+            if mode_config.get("count_all_movements", False) or a.get("inBalance", False)
         )
 
         # Build daily forecast
@@ -1701,7 +1721,7 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
                         # Outflow from tracked balance
                         balance -= op["amount"]
                     elif not from_in and to_in:
-                        # Inflow to tracked balance (only if include_off_balance)
+                        # Inflow to tracked balance (when count_all_movements=true)
                         balance += op["amount"]
                     # else: both in or both out = no net change to tracked balance
 
@@ -1717,6 +1737,45 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
         result["forecast"] = forecast
 
     return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+async def tool_setup_budget_mode(args: dict) -> str:
+    """Setup budget mode configuration (balance_vs_expense or income_vs_expense)."""
+    mode = args.get("mode")
+
+    if not mode:
+        raise ValueError("Parameter 'mode' is required")
+
+    if mode not in ["balance_vs_expense", "income_vs_expense"]:
+        raise ValueError(f"Invalid mode: {mode}. Must be 'balance_vs_expense' or 'income_vs_expense'")
+
+    # Load config
+    cfg_path = ROOT / "config.json"
+    config: dict[str, Any] = {}
+    if cfg_path.exists():
+        try:
+            config = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    # Update config
+    config["budget_mode"] = mode
+    config["budget_mode_configured"] = True
+
+    # Save config
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+
+    # Get mode details
+    mode_config = config.get("budget_modes", {}).get(mode, {})
+
+    return json.dumps({
+        "success": True,
+        "mode": mode,
+        "label": mode_config.get("label", mode),
+        "description": mode_config.get("description", ""),
+        "message": f"Режим '{mode_config.get('label', mode)}' успешно установлен"
+    }, ensure_ascii=False, indent=2)
 
 
 async def tool_get_analytics(args: dict) -> str:
@@ -2428,6 +2487,7 @@ HANDLERS: dict[str, Any] = {
     "get_reminders": tool_get_reminders,
     "rebuild_references": tool_rebuild_references,
     "analyze_budget_detailed": tool_analyze_budget_detailed,
+    "setup_budget_mode": tool_setup_budget_mode,
     "get_analytics": tool_get_analytics,
     "suggest": tool_suggest,
     "get_merchants": tool_get_merchants,
