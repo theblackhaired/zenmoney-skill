@@ -1241,16 +1241,21 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
             return {
                 "category_id": cat_id or "uncategorized",
                 "category_name": "Без категории",
+                "category_full_name": "Без категории",
                 "parent_id": None,
                 "parent_name": None,
                 "is_parent": False,
             }
         meta = cat_index[cat_id]
+        cat_name = meta.get("title", "Unknown")
+        parent_name = meta.get("parent_title")
+        category_full_name = f"{parent_name} / {cat_name}" if parent_name else cat_name
         return {
             "category_id": cat_id,
-            "category_name": meta.get("title", "Unknown"),
+            "category_name": cat_name,
+            "category_full_name": category_full_name,
             "parent_id": meta.get("parent_id"),
-            "parent_name": meta.get("parent_title"),
+            "parent_name": parent_name,
             "is_parent": meta.get("is_parent", False),
         }
 
