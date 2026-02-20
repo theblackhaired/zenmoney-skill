@@ -1588,6 +1588,108 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
                 "to_account_savings": to_acct.get("savings", False),
             })
 
+    # Helper to build hierarchical tree from flat categories
+    def build_category_tree(flat_categories: dict[str, dict], is_expense: bool = False) -> list[dict]:
+        """Convert flat category dict to hierarchical tree structure."""
+        # Group by parent_id
+        by_parent: dict[str | None, list[dict]] = {}
+        for cat_data in flat_categories.values():
+            parent_id = cat_data.get("parent_id")
+            if parent_id not in by_parent:
+                by_parent[parent_id] = []
+            by_parent[parent_id].append(cat_data)
+
+        def aggregate_sums(node: dict, children: list[dict]) -> None:
+            """Recursively aggregate sums from children to parent."""
+            if is_expense:
+                # For expenses: actual, planned_from_reminders, budget
+                node["actual"] = sum(child["actual"] for child in children)
+                node["planned_from_reminders"] = sum(child["planned_from_reminders"] for child in children)
+                node["budget"] = sum(child["budget"] for child in children)
+            else:
+                # For income: actual, planned
+                node["actual"] = sum(child["actual"] for child in children)
+                node["planned"] = sum(child["planned"] for child in children)
+
+        def build_node(cat_data: dict) -> dict:
+            """Recursively build tree node."""
+            cat_id = cat_data["category_id"]
+
+            # Create clean node without parent_id, parent_name, is_parent
+            node = {
+                "category_id": cat_data["category_id"],
+                "category_name": cat_data["category_name"],
+                "category_full_name": cat_data["category_full_name"],
+            }
+
+            # Copy numeric fields
+            if is_expense:
+                node["actual"] = cat_data["actual"]
+                node["planned_from_reminders"] = cat_data["planned_from_reminders"]
+                node["budget"] = cat_data["budget"]
+            else:
+                node["actual"] = cat_data["actual"]
+                node["planned"] = cat_data["planned"]
+
+            # Check if this category has children
+            children_data = by_parent.get(cat_id, [])
+            if children_data:
+                # Has children - recursively build them
+                children = [build_node(child_data) for child_data in children_data]
+                node["children"] = children
+
+                # Aggregate sums from children
+                aggregate_sums(node, children)
+            else:
+                # Leaf node - add items
+                node["items"] = cat_data["items"]
+
+            return node
+
+        # Build tree from root categories (parent_id = None)
+        root_categories = by_parent.get(None, [])
+        tree = [build_node(cat_data) for cat_data in root_categories]
+
+        return tree
+
+    # Add parent categories with zero values if not present
+    all_categories = CACHE.tags() or []
+    category_parents = set()
+    for cat in all_categories:
+        if cat.get("parent"):
+            category_parents.add(cat["parent"])
+
+    for parent_id in category_parents:
+        # Find parent category object
+        parent_cat = next((c for c in all_categories if c.get("id") == parent_id), None)
+        if not parent_cat:
+            continue
+
+        parent_meta = enrich_category(parent_id)
+
+        # Add to expense_by_category if not present
+        if parent_id not in expense_by_category:
+            expense_by_category[parent_id] = {
+                **parent_meta,
+                "actual": 0,
+                "planned_from_reminders": 0,
+                "budget": 0,
+                "items": [],
+            }
+
+        # Add to income_by_category if not present
+        if parent_id not in income_by_category:
+            income_by_category[parent_id] = {
+                **parent_meta,
+                "actual": 0,
+                "planned": 0,
+                "items": [],
+            }
+
+    # Build hierarchical trees
+    income_tree = build_category_tree(income_by_category, is_expense=False)
+    expense_tree = build_category_tree(expense_by_category, is_expense=True)
+
     # Calculate totals
     total_income_actual = sum(c["actual"] for c in income_by_category.values())
     total_income_planned = sum(c["planned"] for c in income_by_category.values())
@@ -1636,35 +1738,38 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
             },
             "balance": int((total_income_actual + total_income_planned) - total_expense_expected - total_transfers_net) if config.get("round_balance_to_integer", True) else (total_income_actual + total_income_planned) - total_expense_expected - total_transfers_net,
         },
-        "income": sorted(income_by_category.values(), key=lambda x: x["actual"] + x["planned"], reverse=True),
-        "expenses": sorted(expense_by_category.values(), key=lambda x: max(x["actual"] + x["planned_from_reminders"], x["budget"]), reverse=True),
+        "income": sorted(income_tree, key=lambda x: x["actual"] + x["planned"], reverse=True),
+        "expenses": sorted(expense_tree, key=lambda x: max(x["actual"] + x["planned_from_reminders"], x["budget"]), reverse=True),
         "transfers": sorted(transfer_items, key=lambda x: x["date"]),
     }
+
+    # Helper to recursively collect items from tree
+    def collect_items_from_tree(nodes: list[dict], item_type: str) -> list[dict]:
+        """Recursively collect all items from tree nodes."""
+        items = []
+        for node in nodes:
+            # If node has children, recurse
+            if "children" in node:
+                items.extend(collect_items_from_tree(node["children"], item_type))
+            # If node has items (leaf node), collect them
+            elif "items" in node:
+                for item in node["items"]:
+                    items.append({
+                        "date": item["date"],
+                        "type": item_type,
+                        "category": node["category_name"],
+                        "payee": item["payee"],
+                        "amount": item["amount"],
+                        "status": item["status"],
+                    })
+        return items
 
     # Add calendar if requested
     if show_calendar:
         calendar = []
-        # Add all items from income and expenses
-        for cat in income_by_category.values():
-            for item in cat["items"]:
-                calendar.append({
-                    "date": item["date"],
-                    "type": "income",
-                    "category": cat["category_name"],
-                    "payee": item["payee"],
-                    "amount": item["amount"],
-                    "status": item["status"],
-                })
-        for cat in expense_by_category.values():
-            for item in cat["items"]:
-                calendar.append({
-                    "date": item["date"],
-                    "type": "expense",
-                    "category": cat["category_name"],
-                    "payee": item["payee"],
-                    "amount": item["amount"],
-                    "status": item["status"],
-                })
+        # Add all items from income and expenses trees
+        calendar.extend(collect_items_from_tree(income_tree, "income"))
+        calendar.extend(collect_items_from_tree(expense_tree, "expense"))
         # Add transfers
         for item in transfer_items:
             calendar.append({
