@@ -1217,9 +1217,6 @@ def calculate_initial_balance(data: dict, period_start_date: str) -> float:
 
 def _calculate_initial_balance_impl(data: dict, period_start_date: str) -> float:
     """Implementation of initial balance calculation."""
-    from datetime import datetime
-    import time
-
     # Get all inBalance accounts (non-archived)
     in_balance_accounts = [
         acc for acc in data.get("account", [])
@@ -1229,9 +1226,7 @@ def _calculate_initial_balance_impl(data: dict, period_start_date: str) -> float
     # Get all transactions
     transactions = data.get("transaction", [])
 
-    # Parse period_start_date to timestamp using mktime (Windows-compatible)
-    period_start_dt = datetime.strptime(period_start_date, "%Y-%m-%d")
-    period_start_ts = time.mktime(period_start_dt.timetuple())
+    # period_start_date is already "YYYY-MM-DD" string, use string comparison
 
     # Build instrument map for currency conversion
     instruments = {i["id"]: i for i in data.get("instrument", [])}
@@ -1246,18 +1241,15 @@ def _calculate_initial_balance_impl(data: dict, period_start_date: str) -> float
         # Sum all balance changes after period_start for this account
         delta = 0.0
         for tx in transactions:
+            if tx.get("deleted"):
+                continue
+
             tx_date = tx.get("date")
             if not tx_date:
                 continue
 
-            # CACHE transactions always have Unix timestamp (numeric)
-            # Skip non-numeric dates (should not happen, but be safe)
-            if not isinstance(tx_date, (int, float)):
-                continue
-
-            tx_ts = float(tx_date)
-
-            if tx_ts < period_start_ts:
+            # Transaction dates are "YYYY-MM-DD" strings
+            if tx_date < period_start_date:
                 continue
 
             # If income to this account
@@ -1911,57 +1903,13 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
         }
     }
 
-    # ZenMoney formula: Свободно = (Текущий баланс + Будущие доходы) - Остаток плана
-    # 1. Balance at period start (not current balance!)
-    cached_data = {
-        "account": list(CACHE.accounts()),
-        "transaction": list(CACHE.transactions()),
-        "instrument": list(CACHE.instruments())
-    }
-    balance_at_start = calculate_initial_balance(cached_data, start_date)
+    # ZenMoney formula: Свободно = Все доходы за период - Все расходы по плану - Переводы (нетто)
+    # This matches ZenMoney Plans tab: total income - total expense plan - total transfer plan
+    total_income = total_income_actual + total_income_planned
+    total_plan = total_expense_for_balance + total_transfers_net
+    remaining_plan = total_plan - total_expense_actual
 
-    # 2. Future income (planned only)
-    future_income = total_income_planned
-
-    # 3. Remaining plan = remaining budgets + planned transfers to credit accounts
-    # 3a. Calculate remaining for each expense category recursively
-    def calc_category_remaining(node: dict) -> float:
-        """Calculate remaining plan for a category (budget - actual + planned)."""
-        if node.get("children"):
-            # Parent category with children
-            parent_budget = node.get("budget", 0)
-            parent_actual = node.get("actual", 0)
-            parent_remaining = max(parent_budget - parent_actual, 0)
-
-            children_remaining = sum(calc_category_remaining(child) for child in node["children"])
-
-            # Extract parent's OWN planned (subtract aggregated children planned)
-            # This avoids double-counting: parent's planned_from_reminders includes children's values
-            children_planned = sum(child.get("planned_from_reminders", 0) for child in node["children"])
-            parent_own_planned = node.get("planned_from_reminders", 0) - children_planned
-
-            # Use max of parent remaining vs children sum (envelope logic)
-            return max(parent_remaining, children_remaining) + parent_own_planned
-        else:
-            # Leaf category
-            budget = node.get("budget", 0)
-            actual = node.get("actual", 0)
-            planned = node.get("planned_from_reminders", 0)
-            return max(budget - actual, 0) + planned
-
-    expenses_remaining = sum(calc_category_remaining(cat) for cat in expense_tree)
-
-    # 3b. Planned transfers to credit accounts (кредитки, рассрочки)
-    transfers_remaining = sum(
-        t["amount"]
-        for t in transfer_items
-        if t["status"] == "planned" and t.get("to_account_subtype") == "credit"
-    )
-
-    remaining_plan = expenses_remaining + transfers_remaining
-
-    # 4. Free balance
-    balance_raw = balance_at_start + future_income - remaining_plan
+    balance_raw = total_income - total_plan
 
     result["summary"]["balance"] = (
         round(balance_raw)
@@ -1971,13 +1919,13 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
 
     # Add detailed breakdown for debugging
     result["summary"]["balance_breakdown"] = {
-        "balance_at_start": balance_at_start,
-        "future_income": future_income,
-        "expenses_remaining": expenses_remaining,
-        "transfers_remaining": transfers_remaining,
+        "total_income": total_income,
+        "total_expense_plan": total_expense_for_balance,
+        "total_transfers_net": total_transfers_net,
+        "total_plan": total_plan,
         "remaining_plan": remaining_plan,
-        "formula": f"{balance_at_start} + {future_income} - {remaining_plan} = {balance_raw}",
-        "formula_readable": f"Баланс на начало ({balance_at_start:,.0f}) + Ещё поступит ({future_income:,.0f}) - Остаток плана ({remaining_plan:,.0f}) = {balance_raw:,.2f}"
+        "formula": f"{total_income} - {total_expense_for_balance} - {total_transfers_net} = {balance_raw}",
+        "formula_readable": f"Все доходы ({total_income:,.0f}) - Расходы по плану ({total_expense_for_balance:,.0f}) - Переводы ({total_transfers_net:,.0f}) = {balance_raw:,.2f}"
     }
 
     # Add income, expenses, transfers to result

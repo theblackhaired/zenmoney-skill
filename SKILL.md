@@ -223,6 +223,18 @@ python3 scripts/cli.py --call '{"tool":"get_reminders","arguments":{"marker_from
 
 ## CHANGELOG
 
+### 2026-02-21 - Fix "Свободно" balance formula and date comparison bug
+
+**Критические исправления:**
+- Исправлен баг в `_calculate_initial_balance_impl`: проверка `isinstance(tx_date, (int, float))` пропускала все транзакции, т.к. даты хранятся как строки `"YYYY-MM-DD"`, а не как Unix timestamps. Заменена на строковое сравнение дат
+- Добавлена фильтрация удалённых транзакций (`tx.get("deleted")`) в расчёте начального баланса
+- Исправлена формула "Свободно на конец месяца" в `analyze_budget_detailed`:
+  - Было: `balance_at_start + future_income - remaining_plan` (неверная модель)
+  - Стало: `total_income - expense_for_balance - transfers_net` (соответствует ZenMoney Plans)
+- Удалена неиспользуемая функция `calc_category_remaining` и вызов `calculate_initial_balance` из формулы
+
+**Мотивация:** Формула давала 5 464 вместо 3 650 (как в ZenMoney). Два бага: (1) даты не сравнивались из-за проверки типа, (2) формула использовала стартовый баланс + будущий доход вместо простого "все доходы минус все планы".
+
 ### 2026-02-21 - Remove references/ directory, generate data on-the-fly from cache
 
 **Удалено:**
