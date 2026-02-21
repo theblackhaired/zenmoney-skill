@@ -1911,39 +1911,74 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
         }
     }
 
-    # Calculate balance based on mode
-    count_all_movements = mode_config.get("count_all_movements", False)
+    # ZenMoney formula: Свободно = (Текущий баланс + Будущие доходы) - Остаток плана
+    # 1. Balance at period start (not current balance!)
+    cached_data = {
+        "account": list(CACHE.accounts()),
+        "transaction": list(CACHE.transactions()),
+        "instrument": list(CACHE.instruments())
+    }
+    balance_at_start = calculate_initial_balance(cached_data, start_date)
 
-    if count_all_movements:
-        # Balance vs Expense mode: use initial balance + actual values only
-        # Build data dict from CACHE for initial balance calculation
-        cached_data = {
-            "account": list(CACHE.accounts()),
-            "transaction": list(CACHE.transactions()),
-            "instrument": list(CACHE.instruments())
-        }
-        initial_balance = calculate_initial_balance(cached_data, start_date)
-        balance_raw = initial_balance + total_income_actual + total_transfers_in - total_expense_actual - total_transfers_out
-    else:
-        # Income vs Expense mode: use planned/expected values
-        balance_raw = (total_income_actual + total_income_planned) - total_expense_for_balance - total_transfers_net
+    # 2. Future income (planned only)
+    future_income = total_income_planned
+
+    # 3. Remaining plan = remaining budgets + planned transfers to credit accounts
+    # 3a. Calculate remaining for each expense category recursively
+    def calc_category_remaining(node: dict) -> float:
+        """Calculate remaining plan for a category (budget - actual + planned)."""
+        if node.get("children"):
+            # Parent category with children
+            parent_budget = node.get("budget", 0)
+            parent_actual = node.get("actual", 0)
+            parent_remaining = max(parent_budget - parent_actual, 0)
+
+            children_remaining = sum(calc_category_remaining(child) for child in node["children"])
+
+            # Extract parent's OWN planned (subtract aggregated children planned)
+            # This avoids double-counting: parent's planned_from_reminders includes children's values
+            children_planned = sum(child.get("planned_from_reminders", 0) for child in node["children"])
+            parent_own_planned = node.get("planned_from_reminders", 0) - children_planned
+
+            # Use max of parent remaining vs children sum (envelope logic)
+            return max(parent_remaining, children_remaining) + parent_own_planned
+        else:
+            # Leaf category
+            budget = node.get("budget", 0)
+            actual = node.get("actual", 0)
+            planned = node.get("planned_from_reminders", 0)
+            return max(budget - actual, 0) + planned
+
+    expenses_remaining = sum(calc_category_remaining(cat) for cat in expense_tree)
+
+    # 3b. Planned transfers to credit accounts (кредитки, рассрочки)
+    transfers_remaining = sum(
+        t["amount"]
+        for t in transfer_items
+        if t["status"] == "planned" and t.get("to_account_subtype") == "credit"
+    )
+
+    remaining_plan = expenses_remaining + transfers_remaining
+
+    # 4. Free balance
+    balance_raw = balance_at_start + future_income - remaining_plan
 
     result["summary"]["balance"] = (
-        int(balance_raw)
+        round(balance_raw)
         if config.get("round_balance_to_integer", True)
         else balance_raw
     )
 
-    # Add debug info for balance_vs_expense mode
-    if count_all_movements:
-        result["summary"]["debug"] = {
-            "initial_balance": initial_balance,
-            "total_income_actual": total_income_actual,
-            "total_expense_actual": total_expense_actual,
-            "total_transfers_in": total_transfers_in,
-            "total_transfers_out": total_transfers_out,
-            "formula": f"{initial_balance} + {total_income_actual} + {total_transfers_in} - {total_expense_actual} - {total_transfers_out} = {balance_raw}"
-        }
+    # Add detailed breakdown for debugging
+    result["summary"]["balance_breakdown"] = {
+        "balance_at_start": balance_at_start,
+        "future_income": future_income,
+        "expenses_remaining": expenses_remaining,
+        "transfers_remaining": transfers_remaining,
+        "remaining_plan": remaining_plan,
+        "formula": f"{balance_at_start} + {future_income} - {remaining_plan} = {balance_raw}",
+        "formula_readable": f"Баланс на начало ({balance_at_start:,.0f}) + Ещё поступит ({future_income:,.0f}) - Остаток плана ({remaining_plan:,.0f}) = {balance_raw:,.2f}"
+    }
 
     # Add income, expenses, transfers to result
     result["income"] = sorted(income_tree, key=lambda x: x["actual"] + x["planned"], reverse=True)
@@ -2045,7 +2080,7 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
             if ops:  # Only add to forecast if there were operations
                 forecast.append({
                     "date": date_str,
-                    "balance": int(balance) if config.get("round_balance_to_integer", True) else round(balance, 2),
+                    "balance": round(balance) if config.get("round_balance_to_integer", True) else round(balance, 2),
                     "operations_count": len(ops),
                 })
 
