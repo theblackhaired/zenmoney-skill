@@ -1,6 +1,6 @@
 ---
 name: zenmoney
-description: "Personal finance management through ZenMoney API — 23 tools for accounts, transactions, budgets, reminders, analytics, references, and ML suggestions. Triggers: money, spending, budgets, accounts, financial management."
+description: "Personal finance management through ZenMoney API — 24 tools for accounts, transactions, budgets, reminders, analytics, and ML suggestions. Triggers: money, spending, budgets, accounts, financial management."
 metadata:
   openclaw:
     requires:
@@ -9,17 +9,15 @@ metadata:
 
 # ZenMoney Personal Finance Assistant
 
-23 tools для ZenMoney API. Все возвращают JSON.
+24 tools для ZenMoney API. Все возвращают JSON.
 
 ## Проверка готовности (при каждом вызове)
 
 Перед выполнением любого запроса проверь наличие данных:
 
-1. **`references/accounts.json`** — если нет → запусти `rebuild_references()`
-2. **`references/categories.json`** — если нет → запусти `rebuild_references()`
-3. **`references/account_meta.json`** — если нет или пустой → запусти инициализацию описаний (см. "Первичная инициализация", шаг 3)
-4. **`config.json` → `billing_period_start_day`** — если нет → спроси пользователя и запиши
-5. **`skill/PROFILE.md`** — если нет → предложи создать по шаблону
+1. **`config.json` → `billing_period_start_day`** — если нет → спроси пользователя и запиши
+2. **`config.json` → `accounts_meta`** — если нет или пустой → запусти инициализацию описаний (см. "Первичная инициализация", шаг 3)
+3. **`skill/PROFILE.md`** — если нет → предложи создать по шаблону
 
 Если все файлы на месте — работай как обычно. Если чего-то не хватает — сначала заполни недостающее, потом выполняй запрос.
 
@@ -38,7 +36,7 @@ python3 scripts/cli.py --list
 python3 scripts/cli.py --describe get_transactions
 ```
 
-## Tool Reference (23 tools)
+## Tool Reference (24 tools)
 
 **Read:**
 - `get_accounts` — `include_archived`
@@ -51,7 +49,6 @@ python3 scripts/cli.py --describe get_transactions
 - `suggest` — `payee`(req)
 - `get_merchants` — `search`, `limit`, `offset`
 - `check_auth_status` — no args
-- `rebuild_references` — regenerates `references/accounts.json` and `references/categories.json` from cache
 
 **Write:**
 - `create_transaction` — `type`(req), `amount`(req), `account_id`(req), `to_account_id`, `category_ids`, `date`, `payee`, `comment`, `currency_id`, `income_amount`
@@ -84,9 +81,8 @@ python3 scripts/cli.py --describe get_transactions
 | Валюты | `get_instruments()` |
 | ML подсказка категории | `suggest(payee)` |
 | Плановые платежи за период | `get_reminders(marker_from, marker_to, type="expense")` |
-| Обновить справочники | `rebuild_references()` |
-| UUID счёта по имени | Read `references/accounts.json` |
-| UUID категории по имени | Read `references/categories.json` |
+| UUID счёта по имени | `get_accounts()` |
+| UUID категории по имени | `get_categories()` |
 
 ## Workflows
 
@@ -138,12 +134,7 @@ It contains: billing period rule (20th–19th), account UUIDs, category UUIDs, f
 - Спроси пользователя: "С какого числа у вас начинается платёжный период?"
 - Запиши значение в `config.json` → `billing_period_start_day`
 
-### 2. Сгенерируй справочники
-```bash
-python3 scripts/cli.py --call '{"tool":"rebuild_references","arguments":{}}'
-```
-
-### 3. Выбери режим работы с планами (бюджетом)
+### 2. Выбери режим работы с планами (бюджетом)
 - При первом запуске `analyze_budget_detailed` система предложит выбрать режим работы
 - Доступно 2 режима (аналогично настройкам ZenMoney → Планы → Настройки → Режим работы):
   - **"Баланс vs Расходы"** (`balance_vs_expense`) — учитывает все движения денег, включая счета вне баланса
@@ -151,47 +142,34 @@ python3 scripts/cli.py --call '{"tool":"rebuild_references","arguments":{}}'
 - Выбери подходящий режим — он сохранится в `config.json` → `budget_mode_configured: true`
 - Изменить режим позже можно через `setup_budget_mode(mode="...")`
 
-### 4. Заполни описания счетов (account_meta.json)
-- Прочитай `references/accounts.json` — список всех счетов
+### 3. Заполни описания счетов (accounts_meta в config.json)
+- Вызови `get_accounts()` — список всех счетов
 - Для каждого активного счёта (`archived: false`) определи назначение:
   - По названию и банку (если очевидно)
   - По последним транзакциям: `get_transactions(start_date="-30d", account_id=UUID, limit=20)`
   - По напоминаниям: какие регулярные платежи привязаны к счёту
-- Сгенерируй описание по правилам (см. "account_meta.json — правила описаний")
-- Запиши в `references/account_meta.json`
-- Перезапусти `rebuild_references()` для мержа описаний в `accounts.json`
+- Сгенерируй описание по правилам (см. "accounts_meta — правила описаний")
+- Запиши в `config.json` → `accounts_meta`
 
-### 5. Проверь PROFILE.md
+### 4. Проверь PROFILE.md
 - Если `skill/PROFILE.md` не существует — создай по шаблону `skill/PROFILE.example.md`
-- Заполни на основе данных из справочников и вопросов пользователю
+- Заполни на основе данных из API-вызовов и вопросов пользователю
 
 **Когда повторять:** при добавлении/удалении счетов, смене банка, изменении структуры категорий.
 
-## Справочники (references/)
+## accounts_meta — правила описаний
 
-Предгенерированные JSON-файлы для быстрого поиска UUID без API-вызовов.
+Описания счетов хранятся в `config.json` → `accounts_meta`. Ключ — UUID счёта, значение — объект с полем `description`.
 
-| Файл | Содержимое | Обновление |
-|------|------------|------------|
-| `references/accounts.json` | Все счета: bank, type, subtype, balance, currency, inBalance, archived, description | `rebuild_references()` |
-| `references/categories.json` | Дерево категорий с parent-child и UUID | `rebuild_references()` |
-| `references/account_meta.json` | Ручные описания счетов (роль, назначение) | Редактировать вручную |
+Данные категорий и счетов генерируются на лету из кэша API (не из файлов). Описания из `accounts_meta` автоматически мержатся в результаты `analyze_budget_detailed`.
 
-### Как использовать
-
-1. **Вместо `get_accounts()`** — читай `references/accounts.json` для получения UUID, типа и описания счёта
-2. **Вместо `get_categories()`** — читай `references/categories.json` для получения UUID категории
-3. **После изменения счетов/категорий** — вызови `rebuild_references()` для обновления кэша
-
-### account_meta.json — правила описаний
-
-Файл `references/account_meta.json` содержит ручные аннотации счетов. Ключ — UUID счёта, значение — объект с полем `description`.
-
-**Формат:**
+**Формат в config.json:**
 ```json
 {
-  "UUID-счёта": {
-    "description": "Краткое описание роли и назначения"
+  "accounts_meta": {
+    "UUID-счёта": {
+      "description": "Краткое описание роли и назначения"
+    }
   }
 }
 ```
@@ -211,8 +189,6 @@ python3 scripts/cli.py --call '{"tool":"rebuild_references","arguments":{}}'
 - `"Транзитный для погашения кредитки Сбербанк"`
 - `"Накопления, подушка безопасности, фонд Япония"`
 - `"Неактивна"`
-
-При `rebuild_references()` описания из `account_meta.json` автоматически мержатся в `accounts.json` (поле `description`, null если не задано).
 
 ## Режимы get_reminders
 
@@ -246,6 +222,20 @@ python3 scripts/cli.py --call '{"tool":"get_reminders","arguments":{"marker_from
 - Интервалы напоминаний: day, week, month, year
 
 ## CHANGELOG
+
+### 2026-02-21 - Remove references/ directory, generate data on-the-fly from cache
+
+**Удалено:**
+- Tool `rebuild_references()` и вся связанная инфраструктура
+- Константа `REFS_DIR` и все обращения к файлам `references/`
+- Секция "Справочники (references/)" из документации
+
+**Добавлено:**
+- Методы `Cache.build_category_index()` и `Cache.build_accounts_map()` для генерации данных на лету из кэша
+- Миграция `account_meta.json` из `references/` в `config.json` → `accounts_meta` (автоматическая при первом запуске)
+- `tool_analyze_budget_detailed` теперь использует кэш напрямую вместо файлов references
+
+**Мотивация:** Устранение рассинхронизации между CACHE и references. Все данные (кроме ручных описаний) вычисляются из кэша на лету.
 
 ### 2026-02-20 - Interactive Budget Mode Setup & Legacy Cleanup
 

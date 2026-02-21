@@ -42,7 +42,6 @@ if _cfg_path.exists():
 TOKEN = os.environ.get("ZENMONEY_TOKEN", "")
 BASE_URL = "https://api.zenmoney.ru"
 CACHE_PATH = ROOT / ".cache.json"
-REFS_DIR = ROOT / "references"
 
 # ---------------------------------------------------------------------------
 # Validation helpers
@@ -279,6 +278,90 @@ class Cache:
     def first_user(self) -> dict | None:
         users = self.users()
         return users[0] if users else None
+
+    def build_category_index(self) -> dict[str, dict]:
+        """Build flat category index with parent info from cache data.
+
+        Returns dict mapping category UUID to enriched data:
+        - id, title, parent_id, parent_title, is_parent, children_count
+        """
+        tags = self.data.get("tag", {})
+
+        # Build parent-child mapping
+        children_map: dict[str, list] = {}
+        for tag_id, tag in tags.items():
+            parent_id = tag.get("parent")
+            if parent_id:
+                children_map.setdefault(parent_id, []).append(tag_id)
+
+        # Build flat index
+        index: dict[str, dict] = {}
+        for tag_id, tag in tags.items():
+            parent_id = tag.get("parent")
+            parent_tag = tags.get(parent_id) if parent_id else None
+
+            index[tag_id] = {
+                "id": tag_id,
+                "title": tag.get("title", ""),
+                "parent_id": parent_id,
+                "parent_title": parent_tag.get("title") if parent_tag else None,
+                "is_parent": tag_id in children_map,
+                "children_count": len(children_map.get(tag_id, [])),
+            }
+
+        return index
+
+    def build_accounts_map(self, accounts_meta: dict) -> dict[str, dict]:
+        """Build enriched accounts map from cache data.
+
+        Args:
+            accounts_meta: dict mapping account UUID to {"description": str}
+
+        Returns dict mapping account UUID to enriched account data with:
+        - id, title, bank, type, subtype, balance, description, etc.
+        """
+        accounts_map: dict[str, dict] = {}
+
+        for acc_id, acc in self.data.get("account", {}).items():
+            company = self.data.get("company", {}).get(str(acc.get("company", "")), {})
+            instr = self.data.get("instrument", {}).get(str(acc.get("instrument", "")), {})
+
+            # Determine subtype
+            atype = acc.get("type", "")
+            credit_limit = acc.get("creditLimit", 0)
+            savings = acc.get("savings", False)
+
+            if atype == "ccard" and credit_limit > 0:
+                subtype = "credit"
+            elif atype == "ccard":
+                subtype = "debit"
+            elif atype == "checking" and savings:
+                subtype = "savings"
+            elif atype == "checking":
+                subtype = "checking"
+            elif atype == "cash":
+                subtype = "cash"
+            elif atype == "debt":
+                subtype = "debt"
+            else:
+                subtype = atype
+
+            accounts_map[acc_id] = {
+                "id": acc_id,
+                "title": acc.get("title", ""),
+                "bank": company.get("title"),
+                "type": atype,
+                "subtype": subtype,
+                "inBalance": acc.get("inBalance", False),
+                "balance": acc.get("balance", 0),
+                "creditLimit": credit_limit,
+                "currency": instr.get("shortTitle", "?"),
+                "savings": savings,
+                "archived": acc.get("archive", False),
+                "description": accounts_meta.get(acc_id, {}).get("description"),
+            }
+
+        return accounts_map
 
 
 CACHE = Cache()
@@ -672,10 +755,6 @@ TOOL_DOCS: dict[str, dict] = {
             "markers_limit": "int (default 5) — max markers per reminder (only used in legacy mode without marker_from/marker_to)",
             "offset": "int (default 0)",
         },
-    },
-    "rebuild_references": {
-        "desc": "Rebuild reference cache files (accounts.json, categories.json) from ZenMoney data. Run after account/category changes.",
-        "params": {},
     },
     "analyze_budget_detailed": {
         "desc": "Detailed budget analysis with income vs expenses breakdown by category, plan vs fact comparison, payment calendar, and balance forecast",
@@ -1116,136 +1195,6 @@ async def tool_get_reminders(args: dict) -> str:
     return json.dumps(output, ensure_ascii=False)
 
 
-async def tool_rebuild_references(args: dict) -> str:
-    REFS_DIR.mkdir(exist_ok=True)
-
-    # --- Load manual account metadata (descriptions, roles) ---
-    meta_path = REFS_DIR / "account_meta.json"
-    account_meta: dict[str, dict] = {}
-    if meta_path.exists():
-        try:
-            account_meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-
-    # --- accounts.json ---
-    accounts_out = []
-    for a in CACHE.data.get("account", {}).values():
-        company = CACHE.data.get("company", {}).get(str(a.get("company", "")), {})
-        instr = CACHE.data.get("instrument", {}).get(str(a.get("instrument", "")), {})
-
-        # Determine subtype
-        atype = a.get("type", "")
-        credit_limit = a.get("creditLimit", 0)
-        savings = a.get("savings", False)
-        if atype == "ccard" and credit_limit > 0:
-            subtype = "credit"
-        elif atype == "ccard":
-            subtype = "debit"
-        elif atype == "checking" and savings:
-            subtype = "savings"
-        elif atype == "checking":
-            subtype = "checking"
-        elif atype == "cash":
-            subtype = "cash"
-        elif atype == "debt":
-            subtype = "debt"
-        else:
-            subtype = atype
-
-        accounts_out.append({
-            "id": a["id"],
-            "title": a.get("title", ""),
-            "bank": company.get("title"),
-            "type": atype,
-            "subtype": subtype,
-            "inBalance": a.get("inBalance", False),
-            "balance": a.get("balance", 0),
-            "creditLimit": credit_limit,
-            "currency": instr.get("shortTitle", "?"),
-            "savings": savings,
-            "archived": a.get("archive", False),
-            "description": account_meta.get(a["id"], {}).get("description"),
-        })
-
-    accounts_out.sort(key=lambda x: (x["archived"], not x["inBalance"], x["title"]))
-    accounts_data = {
-        "generated": _today(),
-        "total": len(accounts_out),
-        "active": len([a for a in accounts_out if not a["archived"]]),
-        "in_balance": len([a for a in accounts_out if a["inBalance"] and not a["archived"]]),
-        "accounts": accounts_out,
-    }
-    (REFS_DIR / "accounts.json").write_text(
-        json.dumps(accounts_data, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-
-    # --- categories.json ---
-    tags = list(CACHE.data.get("tag", {}).values())
-    parents = [t for t in tags if not t.get("parent")]
-    children_map: dict[str, list] = {}
-    for t in tags:
-        pid = t.get("parent")
-        if pid:
-            children_map.setdefault(pid, []).append(t)
-
-    # Build hierarchical structure with parent_id in children
-    categories_out = []
-    for p in sorted(parents, key=lambda t: t.get("title", "")):
-        kids = children_map.get(p["id"], [])
-        cat = {
-            "id": p["id"],
-            "title": p.get("title", ""),
-            "children": [
-                {"id": c["id"], "title": c.get("title", ""), "parent_id": p["id"]}
-                for c in sorted(kids, key=lambda c: c.get("title", ""))
-            ],
-        }
-        categories_out.append(cat)
-
-    # Build flat index for fast lookup
-    index = {}
-    for p in parents:
-        index[p["id"]] = {
-            "title": p.get("title", ""),
-            "parent_id": None,
-            "parent_title": None,
-            "is_parent": True,
-            "children_count": len(children_map.get(p["id"], [])),
-        }
-
-    for t in tags:
-        if t.get("parent"):
-            parent = next((p for p in parents if p["id"] == t["parent"]), None)
-            index[t["id"]] = {
-                "title": t.get("title", ""),
-                "parent_id": t["parent"],
-                "parent_title": parent.get("title", "") if parent else None,
-                "is_parent": False,
-                "children_count": 0,
-            }
-
-    categories_data = {
-        "generated": _today(),
-        "total": len(tags),
-        "parents": len(parents),
-        "categories": categories_out,
-        "index": index,
-    }
-    (REFS_DIR / "categories.json").write_text(
-        json.dumps(categories_data, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-
-    return json.dumps({
-        "status": "ok",
-        "generated": _today(),
-        "accounts": f"{len(accounts_out)} accounts ({accounts_data['active']} active, {accounts_data['in_balance']} in balance)",
-        "categories": f"{len(tags)} categories ({len(parents)} parent, {len(tags) - len(parents)} child, {len(index)} indexed)",
-        "files": ["references/accounts.json", "references/categories.json"],
-        "features": ["parent_id in children", "flat index for fast lookup"],
-    }, ensure_ascii=False)
-
-
 def calculate_initial_balance(data: dict, period_start_date: str) -> float:
     """
     Calculate total inBalance account balances at period start.
@@ -1338,34 +1287,19 @@ def _calculate_initial_balance_impl(data: dict, period_start_date: str) -> float
 async def tool_analyze_budget_detailed(args: dict) -> str:
     """Detailed budget analysis with income vs expenses by category."""
 
-    # Load category index from references
-    cat_index_path = REFS_DIR / "categories.json"
-    cat_index = {}
-    if cat_index_path.exists():
-        try:
-            cat_data = json.loads(cat_index_path.read_text(encoding="utf-8"))
-            cat_index = cat_data.get("index", {})
-        except Exception:
-            pass
+    # Build category index and accounts map from cache
+    cat_index = CACHE.build_category_index()
 
-    # Load accounts reference
-    accounts_ref_path = REFS_DIR / "accounts.json"
-    accounts_map = {}
-    if accounts_ref_path.exists():
-        try:
-            acc_data = json.loads(accounts_ref_path.read_text(encoding="utf-8"))
-            accounts_map = {a["id"]: a for a in acc_data.get("accounts", [])}
-        except Exception:
-            pass
-
-    # Load config for billing period and budget mode
-    cfg_path = ROOT / "config.json"
+    # Load accounts metadata from config
     config: dict[str, Any] = {}
-    if cfg_path.exists():
+    if _cfg_path.exists():
         try:
-            config = json.loads(cfg_path.read_text(encoding="utf-8"))
+            config = json.loads(_cfg_path.read_text(encoding="utf-8"))
         except Exception:
             pass
+
+    accounts_meta = config.get("accounts_meta", {})
+    accounts_map = CACHE.build_accounts_map(accounts_meta)
 
     # Check if budget mode is configured
     if not config.get("budget_mode_configured", False):
@@ -2894,7 +2828,6 @@ HANDLERS: dict[str, Any] = {
     "get_instruments": tool_get_instruments,
     "get_budgets": tool_get_budgets,
     "get_reminders": tool_get_reminders,
-    "rebuild_references": tool_rebuild_references,
     "analyze_budget_detailed": tool_analyze_budget_detailed,
     "setup_budget_mode": tool_setup_budget_mode,
     "get_analytics": tool_get_analytics,
@@ -2917,11 +2850,46 @@ HANDLERS: dict[str, Any] = {
 
 
 # ---------------------------------------------------------------------------
+# Migration helpers
+# ---------------------------------------------------------------------------
+
+def _migrate_account_meta() -> None:
+    """Migrate account_meta.json from references/ to config.json if needed."""
+    old_path = ROOT / "references" / "account_meta.json"
+
+    # Check if migration needed
+    if not old_path.exists():
+        return
+
+    # Load config
+    config: dict[str, Any] = {}
+    if _cfg_path.exists():
+        try:
+            config = json.loads(_cfg_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    # Skip if already migrated
+    if "accounts_meta" in config:
+        return
+
+    # Migrate
+    try:
+        account_meta = json.loads(old_path.read_text(encoding="utf-8"))
+        config["accounts_meta"] = account_meta
+        _cfg_path.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"Migrated account_meta.json to config.json", file=sys.stderr)
+    except Exception as e:
+        print(f"Warning: Failed to migrate account_meta.json: {e}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 async def _run_tool(name: str, args: dict) -> str:
     CACHE.load()
+    _migrate_account_meta()
     await _sync()
     try:
         handler = HANDLERS.get(name)
