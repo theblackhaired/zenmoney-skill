@@ -21,6 +21,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from dateutil.relativedelta import relativedelta
+
 sys.stdout.reconfigure(encoding="utf-8")
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -80,6 +82,79 @@ def _now_ts() -> int:
 
 def _new_uuid() -> str:
     return str(uuid.uuid4())
+
+
+def _generate_marker_dates(
+    start_date: str,
+    interval: str,
+    step: int,
+    points: list[int] | None,
+    end_date: str | None,
+    count: int
+) -> list[str]:
+    """Generate list of marker dates based on reminder recurrence rules.
+
+    Args:
+        start_date: Starting date in yyyy-MM-dd format
+        interval: "day", "week", "month", or "year"
+        step: Step size (e.g., 2 for every 2 months)
+        points: For month/year intervals - specific days to generate markers
+                (e.g., [1, 15] = 1st and 15th of each month)
+        end_date: Optional end date - don't generate beyond this
+        count: Maximum number of markers to generate
+
+    Returns:
+        List of date strings in yyyy-MM-dd format
+    """
+    today = datetime.date.today()
+    current = datetime.date.fromisoformat(start_date)
+    end = datetime.date.fromisoformat(end_date) if end_date else None
+
+    # Don't generate in the past
+    if current < today:
+        current = today
+
+    dates = []
+
+    while len(dates) < count:
+        # Handle points for month/year intervals
+        if points and interval in ("month", "year"):
+            for point in points:
+                marker_date = current.replace(day=min(point, 28))  # Avoid invalid dates like Feb 30
+
+                # Skip past dates
+                if marker_date < today:
+                    continue
+
+                # Stop if beyond end_date
+                if end and marker_date > end:
+                    return dates
+
+                dates.append(marker_date.isoformat())
+
+                if len(dates) >= count:
+                    break
+        else:
+            # No points - use current date
+            if current >= today:
+                if end and current > end:
+                    break
+                dates.append(current.isoformat())
+
+        # Move to next occurrence
+        if interval == "day":
+            current += datetime.timedelta(days=step)
+        elif interval == "week":
+            current += datetime.timedelta(weeks=step)
+        elif interval == "month":
+            current += relativedelta(months=step)
+        elif interval == "year":
+            current += relativedelta(years=step)
+        else:
+            # Unknown interval - stop to avoid infinite loop
+            break
+
+    return dates[:count]
 
 
 # ---------------------------------------------------------------------------
@@ -711,7 +786,7 @@ TOOL_DOCS: dict[str, dict] = {
         },
     },
     "create_reminder": {
-        "desc": "Create a recurring reminder (planned transaction)",
+        "desc": "Create a recurring reminder (planned transaction) with auto-generated markers",
         "params": {
             "type": "str expense|income|transfer (required)",
             "amount": "float (required, positive)",
@@ -722,10 +797,11 @@ TOOL_DOCS: dict[str, dict] = {
             "comment": "str (optional)",
             "interval": "str day|week|month|year (required)",
             "step": "int (default 1)",
-            "points": "list[int] (optional)",
+            "points": "list[int] (optional, for month/year intervals)",
             "start_date": "str yyyy-MM-dd (default today)",
             "end_date": "str yyyy-MM-dd (optional)",
             "notify": "bool (default true)",
+            "generate_markers": "int (default 12) - number of markers to auto-generate, 0 to skip",
         },
     },
     "update_reminder": {
@@ -2507,6 +2583,7 @@ async def tool_create_reminder(args: dict) -> str:
     start_date = _g("start_date", args) or _today()
     end_date = _g("end_date", args)
     notify = bool(_g("notify", args, True))
+    generate_markers = int(_g("generate_markers", args, 12))
 
     _validate_uuid(account_id, "account_id")
     if to_account_id:
@@ -2560,7 +2637,40 @@ async def tool_create_reminder(args: dict) -> str:
         "notify": notify,
     }
 
-    await _write_diff({"reminder": [reminder]})
+    # Generate markers if requested
+    markers = []
+    if generate_markers > 0:
+        dates = _generate_marker_dates(
+            start_date, interval, step, points, end_date, generate_markers
+        )
+        for date_str in dates:
+            marker = {
+                "id": _new_uuid(),
+                "user": user_id,
+                "changed": now,
+                "incomeInstrument": reminder["incomeInstrument"],
+                "incomeAccount": reminder["incomeAccount"],
+                "income": reminder["income"],
+                "outcomeInstrument": reminder["outcomeInstrument"],
+                "outcomeAccount": reminder["outcomeAccount"],
+                "outcome": reminder["outcome"],
+                "tag": reminder["tag"],
+                "merchant": None,
+                "payee": payee,
+                "comment": comment,
+                "date": date_str,
+                "reminder": reminder["id"],
+                "state": "planned",
+                "notify": notify,
+            }
+            markers.append(marker)
+
+    # Send reminder + markers in one request
+    diff_data = {"reminder": [reminder]}
+    if markers:
+        diff_data["reminderMarker"] = markers
+
+    await _write_diff(diff_data)
     return json.dumps({
         "success": True,
         "reminder": {
@@ -2572,6 +2682,7 @@ async def tool_create_reminder(args: dict) -> str:
             "end_date": end_date or "indefinite",
             "points": points or "all",
         },
+        "markers_generated": len(markers),
     }, ensure_ascii=False)
 
 

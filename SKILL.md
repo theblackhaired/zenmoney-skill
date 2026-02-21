@@ -61,7 +61,7 @@ python3 scripts/cli.py --describe get_transactions
 - `create_budget` — `month`(req, yyyy-MM), `category`(req, name/UUID/"ALL"), `income`, `outcome`, `income_lock`, `outcome_lock`
 - `update_budget` — `month`(req), `category`(req), partial fields
 - `delete_budget` — `month`(req), `category`(req)
-- `create_reminder` — `type`, `amount`, `account_id`, `interval`(req), `step`, `points`, `start_date`, `end_date`, `payee`, `comment`, `notify`
+- `create_reminder` — `type`, `amount`, `account_id`, `interval`(req), `step`, `points`, `start_date`, `end_date`, `payee`, `comment`, `notify`, `generate_markers`(default 12, 0 to skip)
 - `update_reminder` — `id`(req), partial fields
 - `delete_reminder` — `id`(req)
 - `create_reminder_marker` — `type`, `amount`, `account_id`, `date`(req), `reminder_id`, `payee`, `comment`, `notify`
