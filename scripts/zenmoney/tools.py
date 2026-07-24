@@ -1,0 +1,331 @@
+from __future__ import annotations
+
+import sys
+from typing import Any
+
+from . import config
+from . import dispatch as _dispatch
+from .budget_tools import (
+    tool_analyze_budget_detailed,
+    tool_create_budget,
+    tool_delete_budget,
+    tool_get_budgets,
+    tool_setup_budget_mode,
+    tool_update_budget,
+)
+from .read_tools import (
+    tool_check_auth_status,
+    tool_get_accounts,
+    tool_get_analytics,
+    tool_get_categories,
+    tool_get_instruments,
+    tool_get_merchants,
+    tool_get_transactions,
+    tool_suggest,
+)
+from .reminder_tools import (
+    tool_create_reminder,
+    tool_create_reminder_marker,
+    tool_delete_reminder,
+    tool_delete_reminder_marker,
+    tool_get_reminders,
+    tool_update_reminder,
+)
+from .write_tools import (
+    tool_create_account,
+    tool_create_transaction,
+    tool_delete_transaction,
+    tool_update_transaction,
+)
+
+
+# ---------------------------------------------------------------------------
+# Tool metadata (for --list / --describe)
+# ---------------------------------------------------------------------------
+
+TOOL_DOCS: dict[str, dict] = {
+    # -- Read tools --
+    "get_accounts": {
+        "desc": "Get all ZenMoney accounts with balances",
+        "params": {"include_archived": "bool (default false) — include archived accounts"},
+    },
+    "get_transactions": {
+        "desc": "Get transactions filtered by date, account, category, type",
+        "params": {
+            "start_date": "str yyyy-MM-dd | -Nd | this_month | billing_period (required)",
+            "end_date": "str yyyy-MM-dd | today | -Nd | this_month | billing_period (optional; auto-filled for this_month/billing_period)",
+            "account_id": "str UUID (optional)",
+            "category_id": "str UUID (optional)",
+            "type": "str expense|income|transfer (optional)",
+            "limit": "int (default 100, max 500)",
+            "offset": "int (default 0)",
+        },
+    },
+    "get_categories": {
+        "desc": "Get all categories (tags) as a tree with parent-child relationships",
+        "params": {},
+    },
+    "get_instruments": {
+        "desc": "Get currencies with IDs, codes, symbols and rates",
+        "params": {"include_all": "bool (default false) — include all, not just used in accounts"},
+    },
+    "get_budgets": {
+        "desc": "Get budgets for a specific month",
+        "params": {"month": "str yyyy-MM (required)"},
+    },
+    "get_reminders": {
+        "desc": "Get scheduled payment reminders with their markers. When marker_from/marker_to are specified, filters reminders by marker dates in that period and sorts by first marker date. Without these params, uses legacy sort by startDate.",
+        "params": {
+            "marker_from": "str yyyy-MM-dd (optional) — start of marker date range (inclusive); if set then marker_to is required, and empty string is rejected",
+            "marker_to": "str yyyy-MM-dd (optional) — end of marker date range (inclusive); if set then marker_from is required, and empty string is rejected",
+            "category": "str (optional) — filter by category name, full path 'Parent / Child', or UUID; ambiguous short names raise",
+            "type": "str expense|income|transfer|all (optional, default all) — filter by operation type",
+            "include_processed": "bool (default false)",
+            "active_only": "bool (default true)",
+            "limit": "int (default 50)",
+            "markers_limit": "int (default 5) — max markers per reminder (only used in legacy mode without marker_from/marker_to)",
+            "offset": "int (default 0)",
+        },
+    },
+    "analyze_budget_detailed": {
+        "desc": "Detailed budget analysis with income vs expenses breakdown by category, plan vs fact comparison, payment calendar, and balance forecast",
+        "params": {
+            "start_date": "str yyyy-MM-dd | -Nd | this_month | billing_period (optional, billing_period auto-calculated if not provided)",
+            "end_date": "str yyyy-MM-dd | today | -Nd | this_month | billing_period (optional; auto-filled for this_month/billing_period)",
+            "budget_mode": "str balance_vs_expense|income_vs_expense (default from config or income_vs_expense) — controls which transfers count as income/expense",
+            "group_by": "str category|date (default category)",
+            "show_forecast": "bool (default true) — show daily balance forecast",
+            "show_calendar": "bool (default true) — show payment calendar",
+        },
+    },
+    "setup_budget_mode": {
+        "desc": "Setup budget mode configuration (balance_vs_expense or income_vs_expense)",
+        "params": {
+            "mode": "str balance_vs_expense|income_vs_expense (required) — budget mode to set",
+        },
+    },
+    "get_analytics": {
+        "desc": "Spending/income analytics grouped by category, account, or merchant",
+        "params": {
+            "start_date": "str yyyy-MM-dd | -Nd | this_month | billing_period (required)",
+            "end_date": "str yyyy-MM-dd | today | -Nd | this_month | billing_period (optional; auto-filled for this_month/billing_period)",
+            "group_by": "str category|account|merchant (default category)",
+            "type": "str expense|income|all (default expense)",
+        },
+    },
+    "suggest": {
+        "desc": "ML suggestions for category/merchant by payee name",
+        "params": {"payee": "str (required)"},
+    },
+    "get_merchants": {
+        "desc": "Get merchants, optionally filtered by search query",
+        "params": {"search": "str (optional)", "limit": "int (default 50)", "offset": "int (default 0)"},
+    },
+    "check_auth_status": {
+        "desc": "Check authentication status and token validity",
+        "params": {},
+    },
+    # -- Write tools --
+    "create_transaction": {
+        "desc": "Create a new transaction (expense, income, or transfer)",
+        "params": {
+            "type": "str expense|income|transfer (required)",
+            "amount": "float (required, positive)",
+            "account_id": "str UUID (required)",
+            "to_account_id": "str UUID (required for transfer)",
+            "category_ids": "list[str] UUIDs (optional)",
+            "date": "str yyyy-MM-dd (default today)",
+            "payee": "str (optional)",
+            "comment": "str (optional)",
+            "currency_id": "int (optional, override account currency)",
+            "income_amount": "float (for cross-currency transfers)",
+        },
+    },
+    "update_transaction": {
+        "desc": "Update an existing transaction. Only pass fields to change.",
+        "params": {
+            "id": "str UUID (required)",
+            "amount": "float (optional)",
+            "category_ids": "list[str] UUIDs (optional)",
+            "date": "str yyyy-MM-dd (optional)",
+            "payee": "str (optional)",
+            "comment": "str (optional)",
+        },
+    },
+    "delete_transaction": {
+        "desc": "Soft-delete a transaction",
+        "params": {"id": "str UUID (required)"},
+    },
+    "create_account": {
+        "desc": "Create a new account",
+        "params": {
+            "title": "str (required)",
+            "type": "str cash|ccard|checking (required)",
+            "currency_id": "int (required, instrument ID)",
+            "balance": "float (default 0)",
+            "credit_limit": "float (default 0)",
+        },
+    },
+    "create_budget": {
+        "desc": "Create or update budget for a category in a month",
+        "params": {
+            "month": "str yyyy-MM (required)",
+            "category": "str name, full path Parent / Child, UUID, 'ALL', or 'ALL (aggregate)' for aggregate (required)",
+            "income": "float (default 0)",
+            "outcome": "float (default 0)",
+            "income_lock": "bool (default false)",
+            "outcome_lock": "bool (default false)",
+        },
+    },
+    "update_budget": {
+        "desc": "Update existing budget. Only pass fields to change.",
+        "params": {
+            "month": "str yyyy-MM (required)",
+            "category": "str name, full path Parent / Child, UUID, 'ALL', or 'ALL (aggregate)' (required)",
+            "income": "float (optional)",
+            "outcome": "float (optional)",
+            "income_lock": "bool (optional)",
+            "outcome_lock": "bool (optional)",
+        },
+    },
+    "delete_budget": {
+        "desc": "Delete budget by zeroing income and outcome",
+        "params": {
+            "month": "str yyyy-MM (required)",
+            "category": "str name, full path Parent / Child, UUID, 'ALL', or 'ALL (aggregate)' (required)",
+        },
+    },
+    "create_reminder": {
+        "desc": "Create a recurring reminder (planned transaction) with auto-generated markers",
+        "params": {
+            "type": "str expense|income|transfer (required)",
+            "amount": "float (required, positive)",
+            "account_id": "str UUID (required)",
+            "to_account_id": "str UUID (for transfers)",
+            "category_ids": "list[str] UUIDs (optional)",
+            "payee": "str (optional)",
+            "comment": "str (optional)",
+            "interval": "str day|week|month|year (required)",
+            "step": "int (default 1, positive)",
+            "points": "list[int] recurrence offsets, each 0 <= point < step (default [0])",
+            "start_date": "str yyyy-MM-dd (default today)",
+            "end_date": "str yyyy-MM-dd (optional)",
+            "notify": "bool (default true)",
+            "generate_markers": "int (default 12) - number of markers to auto-generate, 0 to skip",
+        },
+    },
+    "update_reminder": {
+        "desc": "Update an existing reminder. Only pass fields to change.",
+        "params": {
+            "id": "str UUID (required)",
+            "amount": "float (optional)",
+            "category_ids": "list[str] UUIDs (optional)",
+            "payee": "str (optional)",
+            "comment": "str (optional)",
+            "interval": "str day|week|month|year (optional)",
+            "step": "int (optional)",
+            "points": "list[int] (optional)",
+            "end_date": "str yyyy-MM-dd (optional)",
+            "notify": "bool (optional)",
+            "regenerate_markers": "int (default 12) — count of new markers to generate when recurrence changes",
+        },
+    },
+    "delete_reminder": {
+        "desc": "Delete a reminder and all its associated markers",
+        "params": {"id": "str UUID (required)"},
+    },
+    "create_reminder_marker": {
+        "desc": "Create a one-time reminder marker for a specific date",
+        "params": {
+            "type": "str expense|income|transfer (required)",
+            "amount": "float (required, positive)",
+            "account_id": "str UUID (required)",
+            "to_account_id": "str UUID (for transfers)",
+            "category_ids": "list[str] UUIDs (optional)",
+            "payee": "str (optional)",
+            "comment": "str (optional)",
+            "date": "str yyyy-MM-dd (required)",
+            "reminder_id": "str UUID (optional, auto-creates one-time reminder if absent)",
+            "notify": "bool (default true)",
+        },
+    },
+    "delete_reminder_marker": {
+        "desc": "Delete a reminder marker",
+        "params": {"id": "str UUID (required)"},
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Tool implementations
+# ---------------------------------------------------------------------------
+
+
+
+# ---------------------------------------------------------------------------
+# Dispatch table
+# ---------------------------------------------------------------------------
+
+TOOLS: dict[str, Any] = {
+    "get_accounts": tool_get_accounts,
+    "get_transactions": tool_get_transactions,
+    "get_categories": tool_get_categories,
+    "get_instruments": tool_get_instruments,
+    "get_budgets": tool_get_budgets,
+    "get_reminders": tool_get_reminders,
+    "analyze_budget_detailed": tool_analyze_budget_detailed,
+    "setup_budget_mode": tool_setup_budget_mode,
+    "get_analytics": tool_get_analytics,
+    "suggest": tool_suggest,
+    "get_merchants": tool_get_merchants,
+    "check_auth_status": tool_check_auth_status,
+    "create_transaction": tool_create_transaction,
+    "update_transaction": tool_update_transaction,
+    "delete_transaction": tool_delete_transaction,
+    "create_account": tool_create_account,
+    "create_budget": tool_create_budget,
+    "update_budget": tool_update_budget,
+    "delete_budget": tool_delete_budget,
+    "create_reminder": tool_create_reminder,
+    "update_reminder": tool_update_reminder,
+    "delete_reminder": tool_delete_reminder,
+    "create_reminder_marker": tool_create_reminder_marker,
+    "delete_reminder_marker": tool_delete_reminder_marker,
+}
+
+
+# ---------------------------------------------------------------------------
+# Migration helpers
+# ---------------------------------------------------------------------------
+
+def _migrate_account_meta() -> None:
+    """Migrate account_meta.json from references/ to config.json if needed."""
+    old_path = config.ROOT / "references" / "account_meta.json"
+
+    if not old_path.exists():
+        return
+
+    with config.state_file_lock(config._cfg_path):
+        cfg = config.read_json_state(config._cfg_path)
+        if "accounts_meta" in cfg:
+            return
+        account_meta = config.read_json_state(old_path)
+        cfg["accounts_meta"] = account_meta
+        config.write_json_state_atomic(config._cfg_path, cfg, indent=2)
+    print("Migrated account_meta.json to config.json", file=sys.stderr)
+
+
+
+SyncPolicy = _dispatch.SyncPolicy
+SYNC_POLICY_CACHE_ONLY = _dispatch.SYNC_POLICY_CACHE_ONLY
+SYNC_POLICY_PREFETCH_SYNC = _dispatch.SYNC_POLICY_PREFETCH_SYNC
+SYNC_POLICY_FORCED_LIVE = _dispatch.SYNC_POLICY_FORCED_LIVE
+TOOL_SYNC_POLICY = _dispatch.TOOL_SYNC_POLICY
+
+
+def _get_sync_policy(name: str) -> SyncPolicy:
+    return _dispatch.get_sync_policy(name)
+
+
+async def _run_tool(name: str, args: dict) -> str:
+    return await _dispatch.run_tool(name, args, TOOLS, _migrate_account_meta)

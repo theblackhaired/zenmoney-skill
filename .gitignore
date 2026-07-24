@@ -1,0 +1,16 @@
+.cache.json
+config.json
+__pycache__/
+*.pyc
+.env
+.mcp.json
+nul
+dist/
+node_modules/
+.claude/
+skill/
+temp_*.json
+*_token.json
+*token*.json
+references/*.json
+!references/*.example.json

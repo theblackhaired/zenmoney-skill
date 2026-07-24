@@ -1,0 +1,186 @@
+{
+  "serverTimestamp": 424242,
+  "instrument": [
+    {
+      "id": 1,
+      "shortTitle": "RUB",
+      "title": "Russian Ruble",
+      "symbol": "RUB",
+      "rate": 1
+    },
+    {
+      "id": 2,
+      "shortTitle": "USD",
+      "title": "US Dollar",
+      "symbol": "USD",
+      "rate": 90
+    }
+  ],
+  "account": [
+    {
+      "id": "acct-rub",
+      "user": 1,
+      "instrument": 1,
+      "title": "Main Card",
+      "type": "ccard",
+      "balance": 1000,
+      "creditLimit": 0,
+      "inBalance": true,
+      "savings": false,
+      "archive": false
+    },
+    {
+      "id": "acct-usd-savings",
+      "user": 1,
+      "instrument": 2,
+      "title": "USD Savings",
+      "type": "checking",
+      "balance": 20,
+      "creditLimit": 0,
+      "inBalance": false,
+      "savings": true,
+      "archive": false
+    },
+    {
+      "id": "acct-archived",
+      "user": 1,
+      "instrument": 1,
+      "title": "Archived Cash",
+      "type": "cash",
+      "balance": 500,
+      "creditLimit": 0,
+      "inBalance": true,
+      "savings": false,
+      "archive": true
+    }
+  ],
+  "tag": [
+    {
+      "id": "parent-food",
+      "title": "Food",
+      "parent": null
+    },
+    {
+      "id": "food-home",
+      "title": "Groceries",
+      "parent": "parent-food"
+    },
+    {
+      "id": "parent-travel",
+      "title": "Travel",
+      "parent": null
+    },
+    {
+      "id": "travel-home",
+      "title": "Groceries",
+      "parent": "parent-travel"
+    }
+  ],
+  "merchant": [],
+  "transaction": [
+    {
+      "id": "tx-expense-rub",
+      "date": "2026-04-10",
+      "income": 0,
+      "outcome": 120,
+      "incomeAccount": "acct-rub",
+      "outcomeAccount": "acct-rub",
+      "incomeInstrument": 1,
+      "outcomeInstrument": 1,
+      "tag": [
+        "food-home"
+      ]
+    },
+    {
+      "id": "tx-transfer-in",
+      "date": "2026-04-12",
+      "income": 100,
+      "outcome": 1,
+      "incomeAccount": "acct-rub",
+      "outcomeAccount": "acct-usd-savings",
+      "incomeInstrument": 1,
+      "outcomeInstrument": 2,
+      "tag": []
+    }
+  ],
+  "budget": [],
+  "reminder": [
+    {
+      "id": "rem-expense",
+      "user": 1,
+      "changed": 1,
+      "incomeInstrument": 1,
+      "incomeAccount": "acct-rub",
+      "income": 0,
+      "outcomeInstrument": 1,
+      "outcomeAccount": "acct-rub",
+      "outcome": 300,
+      "tag": [
+        "food-home"
+      ],
+      "merchant": null,
+      "payee": "Rent",
+      "comment": null,
+      "interval": "month",
+      "step": 1,
+      "points": [
+        15
+      ],
+      "startDate": "2026-04-01",
+      "endDate": null,
+      "notify": true
+    }
+  ],
+  "reminderMarker": [
+    {
+      "id": "marker-planned",
+      "user": 1,
+      "changed": 1,
+      "incomeInstrument": 1,
+      "incomeAccount": "acct-rub",
+      "income": 0,
+      "outcomeInstrument": 1,
+      "outcomeAccount": "acct-rub",
+      "outcome": 300,
+      "tag": [
+        "food-home"
+      ],
+      "merchant": null,
+      "payee": "Rent",
+      "comment": null,
+      "date": "2026-04-15",
+      "reminder": "rem-expense",
+      "state": "planned",
+      "notify": true
+    },
+    {
+      "id": "marker-processed",
+      "user": 1,
+      "changed": 1,
+      "incomeInstrument": 1,
+      "incomeAccount": "acct-rub",
+      "income": 0,
+      "outcomeInstrument": 1,
+      "outcomeAccount": "acct-rub",
+      "outcome": 300,
+      "tag": [
+        "food-home"
+      ],
+      "merchant": null,
+      "payee": "Rent",
+      "comment": null,
+      "date": "2026-04-01",
+      "reminder": "rem-expense",
+      "state": "processed",
+      "notify": true
+    }
+  ],
+  "user": [
+    {
+      "id": 1,
+      "login": "fixture-user"
+    }
+  ],
+  "country": [],
+  "company": []
+}
