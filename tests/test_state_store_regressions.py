@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import cli
-from zenmoney import budget_tools, cache, config, dispatch, tools, transport
+from zenmoney import budget_tools, cache, config, dispatch, tools, transport, validation
 
 
 class StateStoreRegressionTests(unittest.TestCase):
@@ -69,11 +69,11 @@ class StateStoreRegressionTests(unittest.TestCase):
             config_path = Path(temp_dir) / "config.json"
             config_path.write_text('{"budget_mode":', encoding="utf-8")
 
-            with patch.object(budget_tools, "_cfg_path", config_path):
+            with patch.object(budget_tools, "_cfg_path", config_path), \
+                 patch.object(validation, "_billing_start_day", return_value=1):
                 with self.assertRaises(config.CorruptStateError):
                     asyncio.run(budget_tools.tool_analyze_budget_detailed({
-                        "start_date": "2026-07-01",
-                        "end_date": "2026-07-31",
+                        "period": "billing_period",
                     }))
 
     def test_cache_load_resets_existing_state_when_file_is_missing(self):

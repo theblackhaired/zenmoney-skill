@@ -12,7 +12,7 @@ The agent runner reads the repository-root `SKILL.md` and invokes the CLI:
 python scripts/cli.py --list
 python scripts/cli.py --describe get_transactions
 python scripts/cli.py --call '{"tool":"get_accounts","arguments":{}}'
-python scripts/cli.py --call '{"tool":"get_analytics","arguments":{"start_date":"2026-02-01","report":"outcome","group_by":"category","currency_mode":"split"}}'
+python scripts/cli.py --call '{"tool":"get_analytics","arguments":{"period":"month","report":"outcome","group_by":"category","currency_mode":"split"}}'
 ```
 
 PowerShell:
@@ -53,22 +53,23 @@ Windows notes:
 - `create_reminder`, `update_reminder`, `delete_reminder`
 - `create_reminder_marker`, `delete_reminder_marker`
 
-## Date shortcuts
+## Period contract
 
-Read/report tools that accept `start_date` and `end_date` now support a small shorthand set in addition to ISO dates:
+Read/report tools (`get_transactions`, `get_analytics`) accept exactly one period selector:
 
-- `-30d` - relative day offset from today
-- `today` - current date
-- `this_month` - expands to the current calendar month
-- `billing_period` - expands using `config.json -> billing_period_start_day`
+- named `period=billing_period|week|month|year` with integer `period_offset` (`0` current, `-1` previous);
+- or an exact custom range with both inclusive `start_date` and `end_date`.
 
-Currently this applies to `get_transactions`, `get_analytics`, and `analyze_budget_detailed`.
+`period=week` requires `first_weekday=0..6` (`0` Monday). Plans accepts only `period=billing_period`, matching the mobile Plans surface. Old magic values and incomplete date ranges are rejected; there is no second shorthand resolver.
+
+Billing days 29-31 follow Android 26.6: when the requested day does not exist, the boundary is day 1 of the next month. Internal ranges are half-open; public `end_date` is inclusive. `Budget.date` remains the first day of the logical calendar month even when its billing boundary rolls into the next month.
 
 ## Analytics contract
 
 `get_analytics` uses a breaking explicit report contract:
 
 - `report` is required: `income`, `outcome`, or `net`.
+- A named period or complete custom range is required; the response echoes resolved boundaries.
 - `group_by` is optional: `category` by default; also accepts `account` or `merchant`.
 - `currency_mode` is optional: `split` by default; also accepts `scalar`.
 - `account_scope` is optional: `in_balance` by default; also accepts `all` or `selected` with `account_ids`.
@@ -147,7 +148,7 @@ Optional fallback if you cannot inject environment variables:
 Configuration options:
 
 - `token` - optional fallback token source; prefer `ZENMONEY_TOKEN`
-- `billing_period_start_day` - day of month when the billing period starts
+- `billing_period_start_day` - required for `period=billing_period`; integer 1..31; missing days roll to day 1 of the next month
 - `budget_mode` - `balance_vs_expense` or `income_vs_expense`
 - `budget_mode_configured` - remembers whether budget mode setup has already been completed
 - `budget_modes` - per-mode transfer classification flags
@@ -167,6 +168,8 @@ Configuration options:
 - `balance_vs_expense` - broader balance model that includes transfers and off-balance movements
 
 You can switch modes with `setup_budget_mode` or by updating `config.json`.
+
+Plans calls require `period=billing_period`; use `period_offset=-1` for the previous plan period.
 
 Aggregate budgets use the sentinel category `ALL` / `ALL (aggregate)`, normalized to `00000000-0000-0000-0000-000000000000` in tool arguments and written with that zero UUID in the current budget write path.
 

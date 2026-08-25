@@ -52,8 +52,11 @@ TOOL_DOCS: dict[str, dict] = {
     "get_transactions": {
         "desc": "Get transactions filtered by date, account, category, type",
         "params": {
-            "start_date": "str yyyy-MM-dd | -Nd | this_month | billing_period (required)",
-            "end_date": "str yyyy-MM-dd | today | -Nd | this_month | billing_period (optional; auto-filled for this_month/billing_period)",
+            "period": "str billing_period|week|month|year with optional period_offset; mutually exclusive with custom dates",
+            "period_offset": "int (default 0; named periods only)",
+            "first_weekday": "int 0..6 (required for period=week; 0 Monday)",
+            "start_date": "str yyyy-MM-dd (custom range only; end_date required)",
+            "end_date": "str yyyy-MM-dd inclusive (custom range only; start_date required)",
             "account_id": "str UUID (optional)",
             "category_id": "str UUID (optional)",
             "type": "str expense|income|transfer (optional)",
@@ -90,10 +93,9 @@ TOOL_DOCS: dict[str, dict] = {
     "analyze_budget_detailed": {
         "desc": "Detailed budget analysis with income vs expenses breakdown by category, plan vs fact comparison, payment calendar, and balance forecast",
         "params": {
-            "start_date": "str yyyy-MM-dd | -Nd | this_month | billing_period (optional, billing_period auto-calculated if not provided)",
-            "end_date": "str yyyy-MM-dd | today | -Nd | this_month | billing_period (optional; auto-filled for this_month/billing_period)",
+            "period": "str billing_period (required); use period_offset for current/previous Plans periods",
+            "period_offset": "int (default 0; -1 previous, 1 next)",
             "budget_mode": "str balance_vs_expense|income_vs_expense (default from config or income_vs_expense) — controls which transfers count as income/expense",
-            "group_by": "str category|date (default category)",
             "show_forecast": "bool (default true) — show daily balance forecast",
             "show_calendar": "bool (default true) — show payment calendar",
         },
@@ -107,8 +109,11 @@ TOOL_DOCS: dict[str, dict] = {
     "get_analytics": {
         "desc": "Income, outcome, or net analytics with strict account, category, and merchant scopes; filter dimensions combine with AND",
         "params": {
-            "start_date": "str yyyy-MM-dd | -Nd | this_month | billing_period (required)",
-            "end_date": "str yyyy-MM-dd | today | -Nd | this_month | billing_period (optional; auto-filled for this_month/billing_period)",
+            "period": "str billing_period|week|month|year with optional period_offset; mutually exclusive with custom dates",
+            "period_offset": "int (default 0; -1 previous, 1 next; named periods only)",
+            "first_weekday": "int 0..6 (required for period=week; 0 Monday)",
+            "start_date": "str yyyy-MM-dd (custom range only; end_date required)",
+            "end_date": "str yyyy-MM-dd inclusive (custom range only; start_date required)",
             "group_by": "str category|account|merchant (default category)",
             "report": "str income|outcome|net (required); turnover is reserved and returns UNSUPPORTED_CALCULATION",
             "currency_mode": "str split|scalar (default split); scalar requires at most one currency",

@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import datetime
 import math
-import re
 import secrets
 import unicodedata
 from typing import Any
 
 from . import cache as _cache
 from . import config
+from . import periods
 from .domain import (
     ALL_CATEGORIES_ID,
     _BUDGET_MODE_DEFAULTS,
@@ -40,7 +40,6 @@ from .errors import (
 _VALIDATED_TOOL_KEY = "__validated_for_tool__"
 _VALIDATED_TOOL_TOKEN = secrets.token_hex(8)
 _VALIDATED_TOOL_VALUE_PREFIX = f"internal:{_VALIDATED_TOOL_TOKEN}:"
-_RELATIVE_DAY_RE = re.compile(r"^[+-]?\d+d$")
 _TRANSACTION_TYPES = {"expense", "income", "transfer"}
 _TRANSACTION_FILTER_TYPES = _TRANSACTION_TYPES
 _REMINDER_FILTER_TYPES = _TRANSACTION_TYPES | {"all"}
@@ -51,9 +50,21 @@ _ANALYTICS_ACCOUNT_SCOPES = {"all", "in_balance", "selected"}
 _ANALYTICS_CATEGORY_SCOPES = {"all", "selected"}
 _ANALYTICS_CATEGORY_ROLES = {"primary", "additional", "any"}
 _ANALYTICS_MERCHANT_SCOPES = {"all", "selected"}
-_ANALYTICS_ARGUMENTS = {
+_PERIOD_ARGUMENTS = {
+    "period",
+    "period_offset",
+    "first_weekday",
     "start_date",
     "end_date",
+}
+_TRANSACTION_ARGUMENTS = _PERIOD_ARGUMENTS | {
+    "account_id",
+    "category_id",
+    "type",
+    "limit",
+    "offset",
+}
+_ANALYTICS_ARGUMENTS = _PERIOD_ARGUMENTS | {
     "report",
     "group_by",
     "currency_mode",
@@ -65,6 +76,13 @@ _ANALYTICS_ARGUMENTS = {
     "merchant_scope",
     "merchant_ids",
     "payees",
+}
+_PLANS_ARGUMENTS = {
+    "period",
+    "period_offset",
+    "budget_mode",
+    "show_forecast",
+    "show_calendar",
 }
 _ACCOUNT_TYPES = {"cash", "ccard", "checking"}
 _REMINDER_INTERVALS = {"day", "week", "month", "year"}
@@ -253,68 +271,47 @@ def get_date_arg_or_today(args: dict, key: str = "date") -> str:
     return _today()
 
 
-def _month_end(value: datetime.date) -> datetime.date:
-    next_month = (value.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
-    return next_month - datetime.timedelta(days=1)
-
-
-def _current_billing_period() -> tuple[str, str]:
+def _billing_start_day() -> int:
     cfg = config._load_config()
-    start_day_raw = cfg.get("billing_period_start_day", 1)
+    if "billing_period_start_day" not in cfg:
+        raise InvalidArgumentError(
+            "billing_period_start_day is required in config.json for period=billing_period"
+        )
+    raw = cfg["billing_period_start_day"]
+    if type(raw) is not int or not 1 <= raw <= 31:
+        raise InvalidArgumentError("billing_period_start_day must be an integer from 1 to 31")
+    return raw
+
+
+def normalize_strict_period(args: dict) -> dict:
+    request = {
+        key: args[key]
+        for key in ("period", "period_offset", "start_date", "end_date")
+        if key in args
+    }
+    first_weekday = args.get("first_weekday")
+    if "first_weekday" in args and args.get("period") != "week":
+        raise InvalidArgumentError("first_weekday is valid only when period=week")
+    if args.get("period") == "week" and first_weekday is None:
+        raise InvalidArgumentError("first_weekday is required when period=week")
+    billing_start_day = _billing_start_day() if request.get("period") == "billing_period" else 1
     try:
-        start_day = int(start_day_raw)
-    except (TypeError, ValueError):
-        start_day = 1
-    start_day = max(1, min(start_day, 28))
-
-    today = datetime.date.fromisoformat(_today())
-    if today.day >= start_day:
-        period_start = datetime.date(today.year, today.month, start_day)
-        next_month = (today.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
-        period_end = datetime.date(next_month.year, next_month.month, start_day) - datetime.timedelta(days=1)
-    else:
-        prev_month = today.replace(day=1) - datetime.timedelta(days=1)
-        period_start = datetime.date(prev_month.year, prev_month.month, start_day)
-        period_end = datetime.date(today.year, today.month, start_day) - datetime.timedelta(days=1)
-    return period_start.isoformat(), period_end.isoformat()
-
-
-def resolve_period_date_arg(value: Any, key: str, *, role: str) -> str:
-    value = _ensure_not_empty_string(value, key, error_cls=InvalidDateError)
-    if not isinstance(value, str):
-        raise InvalidDateError(f"{key} must be a string date")
-
-    today = datetime.date.fromisoformat(_today())
-    if value == "today":
-        return today.isoformat()
-    if _RELATIVE_DAY_RE.fullmatch(value):
-        return (today + datetime.timedelta(days=int(value[:-1]))).isoformat()
-    if value == "this_month":
-        if role == "start":
-            return today.replace(day=1).isoformat()
-        return _month_end(today).isoformat()
-    if value == "billing_period":
-        period_start, period_end = _current_billing_period()
-        return period_start if role == "start" else period_end
-    try:
-        _validate_date(value, key)
-        datetime.date.fromisoformat(value)
-    except ValueError as exc:
-        raise InvalidDateError(str(exc)) from exc
-    return value
-
-
-def normalize_period_range(args: dict, start_key: str = "start_date", end_key: str = "end_date") -> tuple[str, str | None]:
-    start_raw = args[start_key]
-    start = resolve_period_date_arg(start_raw, start_key, role="start")
-    end: str | None = None
-    if end_key in args:
-        end = resolve_period_date_arg(args[end_key], end_key, role="end")
-    elif start_raw in {"this_month", "billing_period"}:
-        end = resolve_period_date_arg(start_raw, end_key, role="end")
-    if end is not None and start > end:
-        raise InvalidDateRangeError(f"{start_key} must be on or before {end_key}")
-    return start, end
+        return periods.resolve_period(
+            request,
+            today=_today(),
+            billing_start_day=billing_start_day,
+            first_weekday=first_weekday,
+        )
+    except periods.InvalidPeriodSelectorError as exc:
+        raise InvalidArgumentError(str(exc)) from exc
+    except periods.InvalidPeriodValueError as exc:
+        if "on or before" in str(exc):
+            raise InvalidDateRangeError(str(exc)) from exc
+        if "must be an ISO date" in str(exc):
+            raise InvalidDateError(str(exc)) from exc
+        raise InvalidArgumentError(str(exc)) from exc
+    except (OverflowError, ValueError) as exc:
+        raise InvalidArgumentError(f"period is outside the supported date range: {exc}") from exc
 
 
 def _coerce_finite_float(value: Any, key: str) -> float | None:
@@ -454,9 +451,19 @@ def validate_tool_args(name: str, args: dict) -> dict:
     elif name == "get_budgets":
         normalized["month"] = get_month_arg(normalized)
     elif name == "get_transactions":
-        normalized["start_date"], normalized_end_date = normalize_period_range(normalized)
-        if normalized_end_date is not None:
-            normalized["end_date"] = normalized_end_date
+        unknown_arguments = sorted(set(normalized) - _TRANSACTION_ARGUMENTS)
+        if unknown_arguments:
+            raise InvalidArgumentError(
+                f"Unknown get_transactions arguments: {', '.join(unknown_arguments)}",
+                {
+                    "unknown_arguments": unknown_arguments,
+                    "accepted_arguments": sorted(_TRANSACTION_ARGUMENTS),
+                },
+            )
+        resolved_period = normalize_strict_period(normalized)
+        normalized["start_date"] = resolved_period["start_date"]
+        normalized["end_date"] = resolved_period["end_date"]
+        normalized["resolved_period"] = resolved_period
         normalized["account_id"] = get_optional_uuid_arg(normalized, "account_id")
         normalized["category_id"] = get_optional_uuid_arg(normalized, "category_id")
         normalized["type"] = get_enum_arg(normalized, "type", _TRANSACTION_FILTER_TYPES)
@@ -534,11 +541,10 @@ def validate_tool_args(name: str, args: dict) -> dict:
                     "accepted_arguments": sorted(_ANALYTICS_ARGUMENTS),
                 },
             )
-        if "start_date" not in normalized:
-            raise InvalidArgumentError("start_date is required")
-        normalized["start_date"], normalized_end_date = normalize_period_range(normalized)
-        if normalized_end_date is not None:
-            normalized["end_date"] = normalized_end_date
+        resolved_period = normalize_strict_period(normalized)
+        normalized["start_date"] = resolved_period["start_date"]
+        normalized["end_date"] = resolved_period["end_date"]
+        normalized["resolved_period"] = resolved_period
         report = normalized.get("report")
         if report == "turnover":
             raise UnsupportedCalculationError(
@@ -658,18 +664,29 @@ def validate_tool_args(name: str, args: dict) -> dict:
             )
         normalized["mode"] = mode
     elif name == "analyze_budget_detailed":
+        unknown_arguments = sorted(set(normalized) - _PLANS_ARGUMENTS)
+        if unknown_arguments:
+            raise InvalidArgumentError(
+                f"Unknown analyze_budget_detailed arguments: {', '.join(unknown_arguments)}",
+                {
+                    "unknown_arguments": unknown_arguments,
+                    "accepted_arguments": sorted(_PLANS_ARGUMENTS),
+                },
+            )
         normalized["show_forecast"] = get_bool_arg(normalized, "show_forecast", True)
         normalized["show_calendar"] = get_bool_arg(normalized, "show_calendar", True)
+        if normalized.get("period") != "billing_period":
+            raise InvalidArgumentError("analyze_budget_detailed requires period=billing_period")
         if "budget_mode" in normalized:
             mode = normalized["budget_mode"]
             if mode not in _BUDGET_MODE_DEFAULTS:
                 raise InvalidArgumentError(
                     f"Unknown budget_mode: {mode}. Available: {sorted(_BUDGET_MODE_DEFAULTS)}"
                 )
-        if "start_date" in normalized:
-            normalized["start_date"], normalized_end_date = normalize_period_range(normalized)
-            if normalized_end_date is not None:
-                normalized["end_date"] = normalized_end_date
+        resolved_period = normalize_strict_period(normalized)
+        normalized["start_date"] = resolved_period["start_date"]
+        normalized["end_date"] = resolved_period["end_date"]
+        normalized["resolved_period"] = resolved_period
     elif name == "suggest":
         payee = _g("payee", normalized)
         if not payee:

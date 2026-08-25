@@ -54,33 +54,32 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 Примеры:
 ```bash
 python scripts/cli.py --call '{"tool":"get_accounts","arguments":{}}'
-python scripts/cli.py --call '{"tool":"get_analytics","arguments":{"start_date":"2026-02-01","report":"outcome","group_by":"category","currency_mode":"split"}}'
+python scripts/cli.py --call '{"tool":"get_analytics","arguments":{"period":"month","report":"outcome","group_by":"category","currency_mode":"split"}}'
 python scripts/cli.py --call '{"tool":"suggest","arguments":{"payee":"Тестовый магазин"}}'
 python scripts/cli.py --list
 python scripts/cli.py --describe get_transactions
 ```
 
-## Date Shortcuts
+## Period Contract
 
-For read/report tools with `start_date` / `end_date`, the runtime also accepts:
+For `get_transactions` and `get_analytics`, select exactly one form:
 
-- `-30d` style relative offsets
-- `today`
-- `this_month`
-- `billing_period`
+- `period=billing_period|week|month|year` plus optional integer `period_offset`
+- both inclusive `start_date` and `end_date` for a custom range
 
-This currently applies to `get_transactions`, `get_analytics`, and `analyze_budget_detailed`. `billing_period` expands from `config.json` -> `billing_period_start_day`.
+`period=week` requires `first_weekday=0..6` (`0` Monday). `analyze_budget_detailed` accepts only `period=billing_period`. Old magic values inside `start_date` and incomplete custom ranges are rejected.
 
 ## Tool Reference (24 tools)
 
 **Read:**
 - `get_accounts` — `include_archived`
-- `get_transactions` — `start_date`(req), `end_date`, `account_id`, `category_id`, `type`(expense/income/transfer), `limit`(max 500), `offset`
+- `get_transactions` — named `period` + optional `period_offset`, or exact `start_date` + `end_date`; `first_weekday` for week; `account_id`, `category_id`, `type`, `limit`, `offset`
 - `get_categories` — no args
 - `get_instruments` — `include_all`
 - `get_budgets` — `month`(req, yyyy-MM)
 - `get_reminders` — `include_processed`, `active_only`, `limit`, `markers_limit`, `offset`, `marker_from`(yyyy-MM-dd), `marker_to`(yyyy-MM-dd), `category`(name), `type`(expense/income/transfer/all)
-- `get_analytics` — `start_date`(req), `end_date`, `report`(req: income/outcome/net), `group_by`(category/account/merchant; default category), `currency_mode`(split/scalar; default split), `account_scope`(all/in_balance/selected; default in_balance), `account_ids`, `category_scope`(all/selected; default all), `category_ids`, `category_role`(primary/additional/any; only with selected category scope), `merchant_scope`(all/selected; default all), `merchant_ids`, `payees`
+- `analyze_budget_detailed` — `period`(req: billing_period), `period_offset`, `budget_mode`, `show_forecast`, `show_calendar`
+- `get_analytics` — named `period` + optional `period_offset`, or exact `start_date` + `end_date`; `first_weekday` for week; `report`(req: income/outcome/net), `group_by`(category/account/merchant; default category), `currency_mode`(split/scalar; default split), strict account/category/merchant scopes
 - `suggest` — `payee`(req)
 - `get_merchants` — `search`, `limit`, `offset`
 - `check_auth_status` — no args
@@ -104,8 +103,8 @@ This currently applies to `get_transactions`, `get_analytics`, and `analyze_budg
 | Задача | Tool(s) |
 |---|---|
 | Баланс, счета | `get_accounts()` |
-| Расходы за период | `get_transactions(start_date, type="expense")` |
-| Аналитика расходов | `get_analytics(start_date, report="outcome", group_by="category", currency_mode="split")` |
+| Расходы за период | `get_transactions(period="month", type="expense")` |
+| Аналитика расходов | `get_analytics(period="month", report="outcome", group_by="category", currency_mode="split")` |
 | Добавить расход/доход | `suggest(payee)` → `create_transaction(...)` |
 | Перевод между счетами | `create_transaction(type="transfer", account_id, to_account_id)` |
 | Бюджет на месяц | `get_budgets(month)` |
@@ -160,21 +159,20 @@ python scripts/cli.py --call '{"tool":"get_analytics","arguments":{"start_date":
 
 ## Платёжный период (config.json)
 
-Параметр `billing_period_start_day` в `config.json` задаёт день начала платёжного периода.
+Параметр `billing_period_start_day` в `config.json` задаёт день начала платёжного периода (целое 1..31).
 
 - Допустимый день начала задаётся локально в `config.json`; tracked-файлы не содержат пользовательское значение.
-- Используй для вычисления дат `marker_from` / `marker_to` в `get_reminders`
-- Используй для определения `month` в `get_budgets` / `create_budget`
+- Plans и Analytics вычисляют границы одним resolver.
+- `Budget.date` всегда остаётся `YYYY-MM-01` логического месяца периода.
 
-**Формула текущего периода:**
+**Формула границы логического месяца:**
 ```
-today = текущая дата
-if today.day >= start_day:
-    marker_from = today.year-today.month-start_day
-    marker_to = next_month.year-next_month.month-(start_day - 1)
+if start_day существует в месяце:
+    boundary = дата с start_day
 else:
-    marker_from = prev_month.year-prev_month.month-start_day
-    marker_to = today.year-today.month-(start_day - 1)
+    boundary = первое число следующего месяца
+internal_range = [boundary(logical_month), boundary(next_logical_month))
+public_end_date = next_boundary - 1 день
 ```
 
 **Округление баланса:**
@@ -205,7 +203,7 @@ If a private profile is needed, keep it outside the tracked repository or in an 
 - Вызови `get_accounts()` — список всех счетов
 - Для каждого активного счёта (`archived: false`) определи назначение:
   - По названию и банку (если очевидно)
-  - По последним транзакциям: `get_transactions(start_date="-30d", account_id=UUID, limit=20)`
+  - По последним транзакциям: `get_transactions(start_date="2026-04-01", end_date="2026-04-30", account_id=UUID, limit=20)`
   - По напоминаниям: какие регулярные платежи привязаны к счёту
 - Сгенерируй описание по правилам (см. "accounts_meta — правила описаний")
 - Запиши в `config.json` → `accounts_meta`

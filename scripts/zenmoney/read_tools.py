@@ -5,11 +5,11 @@ import unicodedata
 from typing import Any
 
 from . import cache as _cache
+from . import periods
 from .domain import (
     _category_full_path,
     _fmt_account,
     _fmt_transaction,
-    _today,
     _tx_type,
 )
 from .errors import ToolError
@@ -28,8 +28,9 @@ async def tool_get_accounts(args: dict) -> str:
 
 async def tool_get_transactions(args: dict) -> str:
     args = validate_tool_args("get_transactions", args)
-    start_date = args["start_date"]
-    end_date = args.get("end_date") or _today()
+    resolved_period = args["resolved_period"]
+    start_date = resolved_period["start_date"]
+    end_date = resolved_period["end_date"]
     account_id = args.get("account_id")
     category_id = args.get("category_id")
     tx_type = args.get("type")
@@ -49,7 +50,10 @@ async def tool_get_transactions(args: dict) -> str:
     txs.sort(key=lambda t: (t.get("date", ""), t.get("created", 0)), reverse=True)
     total = len(txs)
     limited = txs[offset:offset + limit]
-    result: dict[str, Any] = {"transactions": [_fmt_transaction(t) for t in limited]}
+    result: dict[str, Any] = {
+        "period": periods.public_period(resolved_period),
+        "transactions": [_fmt_transaction(t) for t in limited],
+    }
     if total > offset + len(limited):
         result["truncated"] = True
         result["total"] = total
@@ -88,8 +92,9 @@ async def tool_get_instruments(args: dict) -> str:
 
 async def tool_get_analytics(args: dict) -> str:
     args = validate_tool_args("get_analytics", args)
-    start_date = args["start_date"]
-    end_date = args.get("end_date") or _today()
+    resolved_period = args["resolved_period"]
+    start_date = resolved_period["start_date"]
+    end_date = resolved_period["end_date"]
     report = args["report"]
     group_by = args["group_by"]
     currency_mode = args["currency_mode"]
@@ -250,7 +255,7 @@ async def tool_get_analytics(args: dict) -> str:
     groups_list.sort(key=sort_key)
 
     result = {
-        "period": {"start_date": start_date, "end_date": end_date},
+        "period": periods.public_period(resolved_period),
         "report": report,
         "group_by": group_by,
         "currency_mode": currency_mode,

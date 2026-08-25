@@ -6,6 +6,7 @@ from typing import Any
 
 from . import cache as _cache
 from . import config
+from . import periods
 from .config import _cfg_path
 from .domain import (
     ALL_CATEGORIES_ID,
@@ -160,28 +161,11 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
     if not mode_config:
         mode_config = _BUDGET_MODE_DEFAULTS.get(mode_name, DEFAULT_INCOME_VS_EXPENSE)
 
-    # Determine period from billing_period_start_day or use provided dates
     show_forecast = args["show_forecast"]
     show_calendar = args["show_calendar"]
-
-    # Calculate period dates
-    if args.get("start_date"):
-        start_date = args["start_date"]
-        end_date = args.get("end_date") or _today()
-    else:
-        # Auto-calculate from billing_period_start_day
-        billing_start_day = cfg.get("billing_period_start_day", 1)
-
-        today = datetime.date.today()
-        if today.day >= billing_start_day:
-            start_date = datetime.date(today.year, today.month, billing_start_day).isoformat()
-            next_month = today.replace(day=28) + datetime.timedelta(days=4)
-            next_month = next_month.replace(day=1)
-            end_date = (next_month.replace(day=billing_start_day) - datetime.timedelta(days=1)).isoformat()
-        else:
-            prev_month = (today.replace(day=1) - datetime.timedelta(days=1))
-            start_date = datetime.date(prev_month.year, prev_month.month, billing_start_day).isoformat()
-            end_date = datetime.date(today.year, today.month, billing_start_day - 1).isoformat()
+    resolved_period = args["resolved_period"]
+    start_date = resolved_period["start_date"]
+    end_date = resolved_period["end_date"]
 
     # Helper to enrich category with metadata
     def enrich_category(cat_id: str) -> dict:
@@ -273,9 +257,9 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
         else:
             reminders_transfer.append(reminder_data)
 
-    month = start_date[:7]
-    # Get fresh budgets from API. ZenMoney month key = billing period start month,
-    # so get_budgets("2026-02") returns budgets for the Feb 20 – Mar 19 billing period.
+    month = resolved_period["budget_month_anchor"][:7]
+    # Budget.date is the first day of the logical calendar month. The resolved
+    # billing boundary can be in the following month for start days 29-31.
     budgets_raw = json.loads(await tool_get_budgets({"month": month}))
     budgets_map = {}
     for b in budgets_raw:
@@ -788,11 +772,13 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
     ensure_single_currency()
 
     # Build output
+    period_output = periods.public_period(resolved_period)
+    period_output["budget_months"] = [resolved_period["budget_month_anchor"]]
     result = {
         "summary": {
             "budget_mode": mode_name,
             "budget_mode_label": mode_config.get("label", mode_name),
-            "period": {"start": start_date, "end": end_date},
+            "period": period_output,
             "income": {
                 "actual": total_income_actual,
                 "planned": total_income_planned,

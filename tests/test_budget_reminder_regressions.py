@@ -9,7 +9,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from zenmoney import budget_tools, cache, domain, reminder_tools, tools
+from zenmoney import budget_tools, cache, config, domain, reminder_tools, tools, validation
 
 
 ACCOUNT_ID = "11111111-1111-1111-1111-111111111111"
@@ -139,10 +139,11 @@ class BudgetReminderRegressionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "config.json"
             config_path.write_text(json.dumps(_budget_config()), encoding="utf-8")
-            with patch.object(budget_tools, "_cfg_path", config_path):
+            with patch.object(budget_tools, "_cfg_path", config_path), \
+                 patch.object(validation, "_today", return_value="2026-07-15"), \
+                 patch.object(config, "_load_config", return_value={"billing_period_start_day": 1}):
                 return json.loads(asyncio.run(tools.tool_analyze_budget_detailed({
-                    "start_date": "2026-07-01",
-                    "end_date": "2026-07-31",
+                    "period": "billing_period",
                     "show_forecast": False,
                 })))
 
@@ -523,11 +524,12 @@ class BudgetReminderRegressionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "config.json"
             config_path.write_text(json.dumps(_budget_config()), encoding="utf-8")
-            with patch.object(budget_tools, "_cfg_path", config_path):
-                with patch.object(budget_tools, "_today", return_value="2026-07-20"):
+            with patch.object(budget_tools, "_cfg_path", config_path), \
+                 patch.object(budget_tools, "_today", return_value="2026-07-20"), \
+                 patch.object(validation, "_today", return_value="2026-07-20"), \
+                 patch.object(config, "_load_config", return_value={"billing_period_start_day": 20}):
                     result = json.loads(asyncio.run(tools.tool_analyze_budget_detailed({
-                        "start_date": "2026-07-01",
-                        "end_date": "2026-08-31",
+                        "period": "billing_period",
                         "show_calendar": False,
                         "show_forecast": True,
                     })))

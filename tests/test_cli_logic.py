@@ -481,8 +481,10 @@ class DispatchValidationErrorTests(unittest.TestCase):
         mock_close = AsyncMock(return_value=None)
         with patch.object(dispatch, "_sync", mock_sync), \
              patch.object(dispatch, "_close_client", mock_close), \
-             patch.object(tools, "_migrate_account_meta", lambda: None):
+             patch.object(tools, "_migrate_account_meta", lambda: None), \
+             patch.object(config, "_load_config", return_value={"billing_period_start_day": 1}):
             result = asyncio.run(tools._run_tool("analyze_budget_detailed", {
+                "period": "billing_period",
                 "budget_mode": "garbage",
             }))
 
@@ -493,16 +495,17 @@ class DispatchValidationErrorTests(unittest.TestCase):
 
 
 class PeriodShorthandValidationTests(unittest.TestCase):
-    def test_get_transactions_resolves_relative_start_date(self):
+    def test_get_transactions_uses_shared_named_period(self):
         with patch.object(validation, "_today", return_value="2026-04-26"):
-            normalized = validation.validate_tool_args("get_transactions", {"start_date": "-30d"})
+            normalized = validation.validate_tool_args("get_transactions", {"period": "month"})
 
-        self.assertEqual(normalized["start_date"], "2026-03-27")
+        self.assertEqual(normalized["start_date"], "2026-04-01")
+        self.assertEqual(normalized["end_date"], "2026-04-30")
 
-    def test_get_analytics_this_month_expands_to_full_month(self):
+    def test_get_analytics_month_period_expands_to_full_month(self):
         with patch.object(validation, "_today", return_value="2026-04-26"):
             normalized = validation.validate_tool_args("get_analytics", {
-                "start_date": "this_month",
+                "period": "month",
                 "report": "outcome",
             })
 
@@ -514,11 +517,57 @@ class PeriodShorthandValidationTests(unittest.TestCase):
              patch.object(config, "_load_config", return_value={"billing_period_start_day": 20}):
             normalized = validation.validate_tool_args(
                 "analyze_budget_detailed",
-                {"start_date": "billing_period"},
+                {"period": "billing_period"},
             )
 
         self.assertEqual(normalized["start_date"], "2026-04-20")
         self.assertEqual(normalized["end_date"], "2026-05-19")
+
+    def test_plans_and_analytics_share_billing_period_resolution(self):
+        with patch.object(validation, "_today", return_value="2026-03-01"), \
+             patch.object(config, "_load_config", return_value={"billing_period_start_day": 31}):
+            plans = validation.validate_tool_args(
+                "analyze_budget_detailed",
+                {"period": "billing_period"},
+            )
+            analytics = validation.validate_tool_args(
+                "get_analytics",
+                {"period": "billing_period", "report": "outcome"},
+            )
+
+        self.assertEqual(plans["start_date"], "2026-03-01")
+        self.assertEqual(plans["end_date"], "2026-03-30")
+        self.assertEqual(plans["resolved_period"], analytics["resolved_period"])
+        self.assertEqual(plans["resolved_period"]["budget_month_anchor"], "2026-02-01")
+
+    def test_analytics_rejects_removed_period_shorthand(self):
+        with self.assertRaisesRegex(ValueError, "start_date and end_date"):
+            validation.validate_tool_args(
+                "get_analytics",
+                {"start_date": "this_month", "report": "outcome"},
+            )
+
+    def test_transactions_reject_removed_relative_date_shorthand(self):
+        with self.assertRaisesRegex(ValueError, "ISO date"):
+            validation.validate_tool_args(
+                "get_transactions",
+                {"start_date": "-30d", "end_date": "today"},
+            )
+
+    def test_week_requires_explicit_first_weekday(self):
+        with self.assertRaisesRegex(ValueError, "first_weekday is required"):
+            validation.validate_tool_args(
+                "get_analytics",
+                {"period": "week", "report": "outcome"},
+            )
+
+    def test_billing_period_requires_configured_start_day(self):
+        with patch.object(config, "_load_config", return_value={}):
+            with self.assertRaisesRegex(ValueError, "billing_period_start_day is required"):
+                validation.validate_tool_args(
+                    "get_analytics",
+                    {"period": "billing_period", "report": "outcome"},
+                )
 
 
 class UpdateReminderRecurrenceTests(unittest.TestCase):

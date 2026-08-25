@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Breaking: replaced all read/report date shorthands with one strict period resolver; Plans now requires `period=billing_period`, Analytics/transactions require a named period or complete custom range, and weeks require `first_weekday`.
+- The resolver matches Android 26.6 rollover semantics for billing days 29-31 and calendar `Budget.date` anchors.
 - Removed user-specific financial examples and duplicated stale history from tracked skill documentation; local private profiles remain optional and ignored by Git.
 - Replaced `get_analytics` with an explicit breaking contract:
   - `type=expense` -> `report=outcome`

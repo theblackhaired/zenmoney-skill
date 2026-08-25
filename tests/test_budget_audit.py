@@ -9,7 +9,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from zenmoney import budget_tools, cache, config, domain, tools
+from zenmoney import budget_tools, cache, config, domain, tools, validation
 
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -108,16 +108,47 @@ class AnalyzeBudgetDetailedCurrencyAuditTests(unittest.TestCase):
             config_path = Path(temp_dir) / "config.json"
             config_path.write_text(json.dumps(config_payload), encoding="utf-8")
 
-            with patch.object(budget_tools, "_cfg_path", config_path):
+            with patch.object(budget_tools, "_cfg_path", config_path), \
+                 patch.object(validation, "_today", return_value="2026-04-15"), \
+                 patch.object(config, "_load_config", return_value={"billing_period_start_day": 1}):
                 with self.assertRaisesRegex(ValueError, "mixed currencies"):
                     asyncio.run(
                         tools.tool_analyze_budget_detailed(
+                            {"period": "billing_period"}
+                        )
+                    )
+
+    def test_billing_rollover_reads_budget_from_logical_calendar_month(self):
+        cache.CACHE.data["transaction"] = {}
+        captured = {}
+
+        async def fake_get_budgets(args):
+            captured["month"] = args["month"]
+            return "[]"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.json"
+            config_path.write_text(json.dumps(_budget_config()), encoding="utf-8")
+
+            with patch.object(budget_tools, "_cfg_path", config_path), \
+                 patch.object(budget_tools, "tool_get_budgets", side_effect=fake_get_budgets), \
+                 patch.object(validation, "_today", return_value="2026-03-01"), \
+                 patch.object(config, "_load_config", return_value={"billing_period_start_day": 31}):
+                result = json.loads(
+                    asyncio.run(
+                        tools.tool_analyze_budget_detailed(
                             {
-                                "start_date": "2026-04-01",
-                                "end_date": "2026-04-30",
+                                "period": "billing_period",
+                                "show_forecast": False,
+                                "show_calendar": False,
                             }
                         )
                     )
+                )
+
+        self.assertEqual(captured["month"], "2026-02")
+        self.assertEqual(result["summary"]["period"]["budget_months"], ["2026-02-01"])
+        self.assertEqual(result["summary"]["period"]["billing_start_day"], 31)
 
 
 class AnalyzeBudgetDetailedTransferAmountTests(unittest.TestCase):
@@ -218,14 +249,13 @@ class AnalyzeBudgetDetailedTransferAmountTests(unittest.TestCase):
             config_path = Path(temp_dir) / "config.json"
             config_path.write_text(json.dumps(config_payload), encoding="utf-8")
 
-            with patch.object(budget_tools, "_cfg_path", config_path):
+            with patch.object(budget_tools, "_cfg_path", config_path), \
+                 patch.object(validation, "_today", return_value="2026-04-15"), \
+                 patch.object(config, "_load_config", return_value={"billing_period_start_day": 1}):
                 result = json.loads(
                     asyncio.run(
                         tools.tool_analyze_budget_detailed(
-                            {
-                                "start_date": "2026-04-01",
-                                "end_date": "2026-04-30",
-                            }
+                            {"period": "billing_period"}
                         )
                     )
                 )

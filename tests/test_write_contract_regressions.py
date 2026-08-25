@@ -107,6 +107,7 @@ class WriteContractValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(InvalidArgumentError, "limit must be non-negative"):
             validation.validate_tool_args("get_transactions", {
                 "start_date": "2026-07-01",
+                "end_date": "2026-07-31",
                 "limit": -1,
             })
         with self.assertRaisesRegex(InvalidArgumentError, "offset must be non-negative"):
@@ -203,6 +204,7 @@ class WriteContractValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(InvalidArgumentError, "limit must be an integer"):
             validation.validate_tool_args("get_transactions", {
                 "start_date": "2026-07-01",
+                "end_date": "2026-07-31",
                 "limit": True,
             })
         with self.assertRaisesRegex(InvalidArgumentError, "currency_id must be an integer"):
@@ -267,12 +269,14 @@ class WriteContractValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(InvalidArgumentError, "Invalid group_by"):
             validation.validate_tool_args("get_analytics", {
                 "start_date": "2026-07-01",
+                "end_date": "2026-07-31",
                 "report": "outcome",
                 "group_by": "currency",
             })
 
         normalized = validation.validate_tool_args("get_analytics", {
             "start_date": "2026-07-01",
+            "end_date": "2026-07-31",
             "report": "outcome",
         })
         self.assertEqual(normalized["group_by"], "category")
