@@ -18,9 +18,10 @@ metadata:
 1. **Токен доступа** — сначала проверь `ZENMONEY_TOKEN`, если env var пустой — используй `config.json` → `token`, если нет обоих источников — сначала настрой авторизацию
 2. **`config.json` → `billing_period_start_day`** — если нет → спроси пользователя и запиши
 3. **`config.json` → `accounts_meta`** — если нет или пустой → запусти инициализацию описаний (см. "Первичная инициализация", шаг 3)
-4. **`skill/PROFILE.md`** — если нет → предложи создать по шаблону
 
-Если все файлы на месте — работай как обычно. Если чего-то не хватает — сначала заполни недостающее, потом выполняй запрос.
+Локальный `skill/PROFILE.md` необязателен. Если пользователь уже создал его, файл можно читать как приватный контекст; автоматически создавать или коммитить его нельзя.
+
+Если обязательные runtime-данные на месте — работай как обычно. Если чего-то не хватает — сначала заполни недостающее, потом выполняй запрос.
 
 ## Auth and Runtime Files
 
@@ -54,7 +55,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 ```bash
 python scripts/cli.py --call '{"tool":"get_accounts","arguments":{}}'
 python scripts/cli.py --call '{"tool":"get_analytics","arguments":{"start_date":"2026-02-01","report":"outcome","group_by":"category","currency_mode":"split"}}'
-python scripts/cli.py --call '{"tool":"suggest","arguments":{"payee":"Яндекс Еда"}}'
+python scripts/cli.py --call '{"tool":"suggest","arguments":{"payee":"Тестовый магазин"}}'
 python scripts/cli.py --list
 python scripts/cli.py --describe get_transactions
 ```
@@ -161,7 +162,7 @@ python scripts/cli.py --call '{"tool":"get_analytics","arguments":{"start_date":
 
 Параметр `billing_period_start_day` в `config.json` задаёт день начала платёжного периода.
 
-- **Текущее значение:** 20 (период с 20-го по 19-е следующего месяца)
+- Допустимый день начала задаётся локально в `config.json`; tracked-файлы не содержат пользовательское значение.
 - Используй для вычисления дат `marker_from` / `marker_to` в `get_reminders`
 - Используй для определения `month` в `get_budgets` / `create_budget`
 
@@ -180,10 +181,9 @@ else:
 - `round_balance_to_integer` (boolean, по умолчанию true) — округлять итоговый баланс и прогноз до целых рублей
 - Используется для совпадения с отображением в ZenMoney приложении
 
-## User Profile
+## Local private profile
 
-Before performing budgets, reminders, or financial planning — read `skill/PROFILE.md`.
-It contains: billing period rule (20th–19th), account UUIDs, category UUIDs, financial plan 2026, birthday budgets, transfer rules.
+If a private profile is needed, keep it outside the tracked repository or in an ignored local file. Never commit account identifiers, category identifiers, balances, plans, or user-specific period settings.
 
 ## Первичная инициализация
 
@@ -209,10 +209,6 @@ It contains: billing period rule (20th–19th), account UUIDs, category UUIDs, f
   - По напоминаниям: какие регулярные платежи привязаны к счёту
 - Сгенерируй описание по правилам (см. "accounts_meta — правила описаний")
 - Запиши в `config.json` → `accounts_meta`
-
-### 4. Проверь PROFILE.md
-- Если `skill/PROFILE.md` не существует — создай по шаблону `skill/PROFILE.example.md`
-- Заполни на основе данных из API-вызовов и вопросов пользователю
 
 **Когда повторять:** при добавлении/удалении счетов, смене банка, изменении структуры категорий.
 
@@ -243,11 +239,11 @@ It contains: billing period rule (20th–19th), account UUIDs, category UUIDs, f
 - Писать на русском
 
 **Примеры:**
-- `"Основной расчётный счёт, приход ЗП и аванса"`
-- `"Иностранные подписки (Claude, Duolingo, ChatGPT, VDS)"`
-- `"Транзитный для погашения кредитки Сбербанк"`
-- `"Накопления, подушка безопасности, фонд Япония"`
-- `"Неактивна"`
+- `"Основной расчётный счёт"`
+- `"Регулярные подписки"`
+- `"Транзитный счёт для обязательных платежей"`
+- `"Накопления на цель"`
+- `"Не используется"`
 
 ## Режимы get_reminders
 
@@ -265,9 +261,9 @@ It contains: billing period rule (20th–19th), account UUIDs, category UUIDs, f
 - Анализа подписок по категориям
 - Сравнения плана с фактом
 
-**Пример — подписки на иностранные сервисы за период:**
+**Пример — регулярные подписки за период:**
 ```bash
-python scripts/cli.py --call '{"tool":"get_reminders","arguments":{"marker_from":"2026-02-20","marker_to":"2026-03-19","category":"Иностранные сервисы","type":"expense"}}'
+python scripts/cli.py --call '{"tool":"get_reminders","arguments":{"marker_from":"2026-04-01","marker_to":"2026-04-30","category":"Подписки","type":"expense"}}'
 ```
 
 ## Форматы данных
@@ -279,96 +275,3 @@ python scripts/cli.py --call '{"tool":"get_reminders","arguments":{"marker_from"
 - Типы транзакций: expense, income, transfer
 - Типы счетов: cash, ccard, checking
 - Интервалы напоминаний: day, week, month, year
-
-## CHANGELOG
-
-### 2026-02-21 - Fix "Свободно" balance formula and date comparison bug
-
-**Критические исправления:**
-- Исправлен баг в `_calculate_initial_balance_impl`: проверка `isinstance(tx_date, (int, float))` пропускала все транзакции, т.к. даты хранятся как строки `"YYYY-MM-DD"`, а не как Unix timestamps. Заменена на строковое сравнение дат
-- Добавлена фильтрация удалённых транзакций (`tx.get("deleted")`) в расчёте начального баланса
-- Исправлена формула "Свободно на конец месяца" в `analyze_budget_detailed`:
-  - Было: `balance_at_start + future_income - remaining_plan` (неверная модель)
-  - Стало: `total_income - expense_for_balance - transfers_net` (соответствует ZenMoney Plans)
-- Удалена неиспользуемая функция `calc_category_remaining` и вызов `calculate_initial_balance` из формулы
-
-**Мотивация:** Формула давала 5 464 вместо 3 650 (как в ZenMoney). Два бага: (1) даты не сравнивались из-за проверки типа, (2) формула использовала стартовый баланс + будущий доход вместо простого "все доходы минус все планы".
-
-### 2026-02-21 - Remove references/ directory, generate data on-the-fly from cache
-
-**Удалено:**
-- Tool `rebuild_references()` и вся связанная инфраструктура
-- Константа `REFS_DIR` и все обращения к файлам `references/`
-- Секция "Справочники (references/)" из документации
-
-**Добавлено:**
-- Методы `Cache.build_category_index()` и `Cache.build_accounts_map()` для генерации данных на лету из кэша
-- Миграция `account_meta.json` из `references/` в `config.json` → `accounts_meta` (автоматическая при первом запуске)
-- `tool_analyze_budget_detailed` теперь использует кэш напрямую вместо файлов references
-
-**Мотивация:** Устранение рассинхронизации между CACHE и references. Все данные (кроме ручных описаний) вычисляются из кэша на лету.
-
-### 2026-02-20 - Interactive Budget Mode Setup & Cleanup
-
-**Интерактивная настройка режима:**
-- Добавлен новый tool `setup_budget_mode(mode)` для выбора режима работы с бюджетом
-- При первом запуске `analyze_budget_detailed` система предлагает выбрать режим (аналогично ZenMoney → Планы → Настройки → Режим работы)
-- Флаг `budget_mode_configured` в config.json отслеживает статус настройки
-- После выбора режима флаг устанавливается в `true` и больше не беспокоит пользователя
-- Изменить режим позже можно через `setup_budget_mode` или напрямую в config.json
-
-**Устаревший код удалён:**
-- Полностью удалён устаревший параметр `include_off_balance` из `analyze_budget_detailed`
-- Вся логика теперь управляется через систему режимов (`budget_mode` + `mode_config`)
-- Флаг `count_all_movements` из конфигурации режима заменяет `include_off_balance`
-
-**Режим по умолчанию:**
-- Изменён на `balance_vs_expense` (Баланс vs Расходы) — учитывает все движения денег
-
-### 2026-02-20 - Configurable Budget Modes System
-
-**Критическое исправление:**
-- Исправлен баг с отсутствующими метаданными (type, subtype, savings) в actual transfer items, из-за которого classify_transfer возвращал None для всех реальных переводов
-
-**Новая функциональность:**
-- Система конфигурируемых режимов анализа бюджета с двумя предустановками:
-  - **"Доходы vs Расходы" (income_vs_expense)** — исключает лишние переводы, учитывает только погашения долгов (кредитки, рассрочки)
-  - **"Баланс vs Расходы (balance_vs_expense)** — учитывает все движения денег, включая счета вне баланса
-- Гибкая конфигурация компонентов через `config.json` → `budget_modes` с индивидуальными флагами для каждого типа перевода
-- Новый параметр `budget_mode` в `analyze_budget_detailed` для переключения режимов
-- Флаг `count_all_movements` для Режима 1 (игнорирует проверки inBalance)
-
-**Рефакторинг:**
-- Вынесена `classify_transfer()` на уровень модуля с сигнатурой `classify_transfer(item: dict, mode_config: dict) -> tuple | None`
-- Добавлены константы `DEFAULT_BALANCE_VS_EXPENSE` и `DEFAULT_INCOME_VS_EXPENSE` для fallback
-- Логика классификации переводов теперь управляется флагами из конфигурации
-
-**Классификация переводов:**
-Режим "Доходы vs Расходы" учитывает:
-- Расходы: только переводы на credit счета (погашения кредиток/рассрочек)
-- Исключает: транзитные debit off-balance счета (HML.APP), переводы между своими счетами
-
-Режим "Баланс vs Расходы" учитывает:
-- Все переводы: credit, savings, debt, off-balance
-- Все движения денег независимо от флагов inBalance
-
-**Вывод:**
-- Добавлены поля `budget_mode` и `budget_mode_label` в summary для отображения активного режима
-
-### 2026-02-20 - Budget Analysis Tool
-
-**Новый инструмент:**
-- `analyze_budget_detailed` — комплексный анализ бюджета на платёжный период с детализацией по категориям, календарём событий и прогнозом баланса
-
-**Что включает:**
-- Фактические и плановые доходы/расходы
-- Бюджеты для категорий без напоминаний
-- Переводы на кредитки и рассрочки с фильтрацией по комментариям ("погашение", "рассрочка", "кредит")
-- Исключение "processed" маркеров для предотвращения дублирования
-- Календарь всех операций с сортировкой по датам
-- Прогноз баланса на каждый день периода
-
-**Исправления:**
-- Фильтрация переводов: учитываются только переводы на счета с `subtype == "credit"` (кредитки/рассрочки) и с соответствующими комментариями
-- Использование свежих данных из API вместо устаревшего кэша для бюджетов
-- Правильная обработка account `inBalance` флагов для расчёта баланса

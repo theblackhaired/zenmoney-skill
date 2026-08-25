@@ -838,8 +838,8 @@ class CreateReminderMarkerTests(unittest.TestCase):
                 "account_id": self.ACCOUNT_ID,
                 "category_ids": [self.TAG_ID],
                 "date": "2026-07-01",
-                "payee": "ISS",
-                "comment": "Отпускные",
+                "payee": "Employer A",
+                "comment": "Synthetic income",
                 "notify": False,
             })))
 
@@ -888,7 +888,7 @@ class GetAnalyticsCurrencySplitTests(unittest.TestCase):
         }
         cache.CACHE.data["tag"] = {
             "tag-foreign": {
-                "id": "tag-foreign", "title": "Иностранные сервисы", "parent": None,
+                "id": "tag-foreign", "title": "Subscription Category", "parent": None,
             },
         }
         cache.CACHE.data["transaction"] = {
@@ -930,7 +930,7 @@ class GetAnalyticsCurrencySplitTests(unittest.TestCase):
         )
 
         groups = result["groups"]
-        named_foreign = [g for g in groups if g["name"] == "Иностранные сервисы"]
+        named_foreign = [g for g in groups if g["name"] == "Subscription Category"]
         self.assertEqual(len(named_foreign), 2)
 
         by_currency = {g["currency"]: g for g in named_foreign}

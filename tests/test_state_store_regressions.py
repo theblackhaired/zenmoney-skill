@@ -466,7 +466,7 @@ class StateStoreRegressionTests(unittest.TestCase):
         mocked_print.assert_called_once_with("[]")
 
     def test_cli_reads_cyrillic_call_payload_from_stdin(self):
-        payload = '{"tool":"suggest","arguments":{"payee":"Яндекс Еда"}}'
+        payload = '{"tool":"suggest","arguments":{"payee":"Тестовый магазин"}}'
         with patch.object(cli.config, "TOKEN", "token"), \
              patch.object(cli, "_run_tool", AsyncMock(return_value='{"status":"ok"}')) as run_tool, \
              patch.object(sys, "argv", ["cli.py", "--call", "-"]), \
@@ -474,10 +474,10 @@ class StateStoreRegressionTests(unittest.TestCase):
              patch("builtins.print"):
             cli.main()
 
-        run_tool.assert_awaited_once_with("suggest", {"payee": "Яндекс Еда"})
+        run_tool.assert_awaited_once_with("suggest", {"payee": "Тестовый магазин"})
 
     def test_cli_decodes_ascii_escaped_unicode_from_stdin(self):
-        payload = r'{"tool":"suggest","arguments":{"payee":"\u042f\u043d\u0434\u0435\u043a\u0441 \u0415\u0434\u0430"}}'
+        payload = r'{"tool":"suggest","arguments":{"payee":"\u0422\u0435\u0441\u0442\u043e\u0432\u044b\u0439 \u043c\u0430\u0433\u0430\u0437\u0438\u043d"}}'
         with patch.object(cli.config, "TOKEN", "token"), \
              patch.object(cli, "_run_tool", AsyncMock(return_value='{"status":"ok"}')) as run_tool, \
              patch.object(sys, "argv", ["cli.py", "--call", "-"]), \
@@ -485,7 +485,7 @@ class StateStoreRegressionTests(unittest.TestCase):
              patch("builtins.print"):
             cli.main()
 
-        run_tool.assert_awaited_once_with("suggest", {"payee": "Яндекс Еда"})
+        run_tool.assert_awaited_once_with("suggest", {"payee": "Тестовый магазин"})
 
     def test_cli_reports_corrupt_config_instead_of_missing_token(self):
         corrupt = config.CorruptStateError(Path("config.json"), "bad JSON")
