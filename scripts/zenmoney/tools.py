@@ -13,6 +13,12 @@ from .budget_tools import (
     tool_setup_budget_mode,
     tool_update_budget,
 )
+from .advanced_analytics_tools import (
+    tool_get_balance_trend,
+    tool_get_category_report,
+    tool_get_income_outcome_comparison,
+    tool_get_money_flow,
+)
 from .read_tools import (
     tool_check_auth_status,
     tool_get_accounts,
@@ -95,15 +101,17 @@ TOOL_DOCS: dict[str, dict] = {
         "params": {
             "period": "str billing_period (required); use period_offset for current/previous Plans periods",
             "period_offset": "int (default 0; -1 previous, 1 next)",
-            "budget_mode": "str balance_vs_expense|income_vs_expense (default from config or income_vs_expense) — controls which transfers count as income/expense",
+            "budget_mode": "str balance_vs_expense|income_vs_expense (optional local override; default from synced user.planBalanceMode) — applies the matching ZenMoney Plans policy",
             "show_forecast": "bool (default true) — show daily balance forecast",
             "show_calendar": "bool (default true) — show payment calendar",
+            "difference_calculation_mode": "REFUNDS|INCOME_OUTCOME_AND_REFUNDS|NONE (optional; BALANCE mode always uses NONE)",
         },
     },
     "setup_budget_mode": {
-        "desc": "Setup budget mode configuration (balance_vs_expense or income_vs_expense)",
+        "desc": "Set a local Plans UI-mode override; transfer switches continue to come from synced user.planSettings unless explicitly overridden in config",
         "params": {
             "mode": "str balance_vs_expense|income_vs_expense (required) — budget mode to set",
+            "difference_calculation_mode": "REFUNDS|INCOME_OUTCOME_AND_REFUNDS|NONE (optional)",
         },
     },
     "get_analytics": {
@@ -125,6 +133,47 @@ TOOL_DOCS: dict[str, dict] = {
             "merchant_scope": "str all|selected (default all); selected requires merchant_ids or payees",
             "merchant_ids": "list[str UUID] (selected merchant_scope only); merchant identity takes precedence over payee",
             "payees": "list[str] exact case-sensitive NFC-normalized payee fallbacks used only when a transaction has no merchant ID",
+        },
+    },
+    "get_category_report": {
+        "desc": "ZenMoney category or payee report with BUDGET/MEAN plan comparison",
+        "params": {
+            "period": "billing_period|week|month|year with optional period_offset, or custom start_date/end_date",
+            "direction": "INCOME|OUTCOME (default OUTCOME)",
+            "group_by": "TAG|PAYEE (default TAG; PAYEE always uses MEAN)",
+            "budget_method": "BUDGET|MEAN (default BUDGET)",
+            "comparison_periods": "int 0..12 (default 3)",
+            "difference_calculation_mode": "REFUNDS|INCOME_OUTCOME_AND_REFUNDS|NONE (default saved mode or REFUNDS)",
+            "account_scope": "all|in_balance|selected (default in_balance)",
+            "account_ids": "list[str UUID] (selected scope only)",
+        },
+    },
+    "get_money_flow": {
+        "desc": "ZenMoney Money Flow buckets, weights, residue, and overspending by native currency",
+        "params": {
+            "period": "billing_period|week|month|year with optional period_offset, or custom start_date/end_date",
+            "account_scope": "all|in_balance|selected (default in_balance)",
+            "account_ids": "list[str UUID] (selected scope only)",
+        },
+    },
+    "get_income_outcome_comparison": {
+        "desc": "ZenMoney income/outcome comparison for the selected and preceding periods",
+        "params": {
+            "period": "billing_period|week|month|year with optional period_offset, or custom start_date/end_date",
+            "mode": "WHOLE_PERIOD|AVERAGE_VALUES (AVERAGE_VALUES fails explicitly while its APK formula is unconfirmed)",
+            "comparison_periods": "int 0..12 (default 3)",
+            "account_scope": "all|in_balance|selected (default in_balance)",
+            "account_ids": "list[str UUID] (selected scope only)",
+        },
+    },
+    "get_balance_trend": {
+        "desc": "ZenMoney balance trend reconstructed from synced current balances and transaction history",
+        "params": {
+            "period": "billing_period|week|month|year with optional period_offset, or custom start_date/end_date",
+            "currency_filter": "USER|POPULAR (default USER)",
+            "currency": "instrument id or code (optional; default user/main currency)",
+            "account_scope": "all|in_balance|selected (default in_balance)",
+            "account_ids": "list[str UUID] (selected scope only)",
         },
     },
     "suggest": {
@@ -290,6 +339,10 @@ TOOLS: dict[str, Any] = {
     "analyze_budget_detailed": tool_analyze_budget_detailed,
     "setup_budget_mode": tool_setup_budget_mode,
     "get_analytics": tool_get_analytics,
+    "get_category_report": tool_get_category_report,
+    "get_money_flow": tool_get_money_flow,
+    "get_income_outcome_comparison": tool_get_income_outcome_comparison,
+    "get_balance_trend": tool_get_balance_trend,
     "suggest": tool_suggest,
     "get_merchants": tool_get_merchants,
     "check_auth_status": tool_check_auth_status,

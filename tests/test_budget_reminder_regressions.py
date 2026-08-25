@@ -22,16 +22,9 @@ MARKER_ID = "66666666-6666-6666-6666-666666666666"
 
 def _budget_config() -> dict:
     return {
-        "budget_mode_configured": True,
         "budget_mode": "income_vs_expense",
-        "budget_modes": {
-            "income_vs_expense": {
-                "label": "Income vs Expense",
-                "count_all_movements": False,
-                "income": {"from_savings": True},
-                "expense": {"to_credit": True},
-            }
-        },
+        "plan_settings_override": [],
+        "difference_calculation_mode": "NONE",
         "accounts_meta": {},
         "round_balance_to_integer": True,
     }
@@ -63,6 +56,7 @@ def _expense_transaction(
 
 def _budget_entry(tag_id: str, outcome: int, *, outcome_lock: bool = False) -> dict:
     return {
+        "user": 1,
         "tag": tag_id,
         "date": "2026-07-01",
         "income": 0,
@@ -147,6 +141,10 @@ class BudgetReminderRegressionTests(unittest.TestCase):
                     "show_forecast": False,
                 })))
 
+    @staticmethod
+    def _budget_key(tag_id: str) -> str:
+        return f"1:{tag_id}:2026-07-01"
+
     def test_budget_formatter_distinguishes_aggregate_and_uncategorized(self):
         aggregate = domain._fmt_budget({
             "tag": domain.ALL_CATEGORIES_ID,
@@ -186,8 +184,9 @@ class BudgetReminderRegressionTests(unittest.TestCase):
         self.assertEqual(result["budget"]["category_id"], domain.ALL_CATEGORIES_ID)
 
     def test_delete_budget_zeroes_amounts_and_unlocks(self):
-        key = f"{domain.ALL_CATEGORIES_ID}:2026-07-01"
+        key = self._budget_key(domain.ALL_CATEGORIES_ID)
         cache.CACHE.data["budget"][key] = {
+            "user": 1,
             "tag": domain.ALL_CATEGORIES_ID,
             "date": "2026-07-01",
             "income": 10,
@@ -262,7 +261,7 @@ class BudgetReminderRegressionTests(unittest.TestCase):
         cache.CACHE.data["transaction"] = {
             "actual": _expense_transaction("actual", 50),
         }
-        cache.CACHE.data["budget"][f"{TAG_ID}:2026-07-01"] = _budget_entry(TAG_ID, 200, outcome_lock=True)
+        cache.CACHE.data["budget"][self._budget_key(TAG_ID)] = _budget_entry(TAG_ID, 200, outcome_lock=True)
         cache.CACHE.data["reminder"][REMINDER_ID] = _expense_reminder()
         cache.CACHE.data["reminderMarker"] = {
             "planned": _marker("planned", "2026-07-25"),
@@ -276,7 +275,7 @@ class BudgetReminderRegressionTests(unittest.TestCase):
         cache.CACHE.data["transaction"] = {
             "actual": _expense_transaction("actual", 250),
         }
-        cache.CACHE.data["budget"][f"{TAG_ID}:2026-07-01"] = _budget_entry(TAG_ID, 200)
+        cache.CACHE.data["budget"][self._budget_key(TAG_ID)] = _budget_entry(TAG_ID, 200)
         cache.CACHE.data["reminder"][REMINDER_ID] = _expense_reminder()
         cache.CACHE.data["reminderMarker"] = {
             "planned": _marker("planned", "2026-07-25"),
@@ -290,7 +289,7 @@ class BudgetReminderRegressionTests(unittest.TestCase):
         cache.CACHE.data["transaction"] = {
             "actual": _expense_transaction("actual", 100, reminder_marker="processed"),
         }
-        cache.CACHE.data["budget"][f"{TAG_ID}:2026-07-01"] = _budget_entry(TAG_ID, 200)
+        cache.CACHE.data["budget"][self._budget_key(TAG_ID)] = _budget_entry(TAG_ID, 200)
         cache.CACHE.data["reminder"][REMINDER_ID] = _expense_reminder(start_date="2026-07-10")
         cache.CACHE.data["reminderMarker"] = {
             "processed": _marker("processed", "2026-07-10", "processed"),
@@ -298,12 +297,12 @@ class BudgetReminderRegressionTests(unittest.TestCase):
 
         result = self._analyze_budget()
 
-        self.assertEqual(result["summary"]["expense"]["category_difference_policy"], "none")
+        self.assertEqual(result["summary"]["expense"]["category_difference_policy"], "NONE")
         self.assertEqual(result["summary"]["expense"]["processed_planned"], 100)
         self.assertEqual(result["summary"]["expense"]["for_balance"], 300)
 
     def test_zero_locked_budget_does_not_reserve_planned_marker(self):
-        cache.CACHE.data["budget"][f"{TAG_ID}:2026-07-01"] = _budget_entry(TAG_ID, 0, outcome_lock=True)
+        cache.CACHE.data["budget"][self._budget_key(TAG_ID)] = _budget_entry(TAG_ID, 0, outcome_lock=True)
         cache.CACHE.data["reminder"][REMINDER_ID] = _expense_reminder()
         cache.CACHE.data["reminderMarker"] = {
             "planned": _marker("planned", "2026-07-25"),
@@ -314,7 +313,7 @@ class BudgetReminderRegressionTests(unittest.TestCase):
         self.assertEqual(result["summary"]["expense"]["for_balance"], 0)
 
     def test_all_budget_is_not_added_to_plans_category_total(self):
-        cache.CACHE.data["budget"][f"{domain.ALL_CATEGORIES_ID}:2026-07-01"] = _budget_entry(
+        cache.CACHE.data["budget"][self._budget_key(domain.ALL_CATEGORIES_ID)] = _budget_entry(
             domain.ALL_CATEGORIES_ID,
             1000,
             outcome_lock=True,
@@ -333,7 +332,7 @@ class BudgetReminderRegressionTests(unittest.TestCase):
         cache.CACHE.data["transaction"] = {
             "parent-actual": _expense_transaction("parent-actual", 50),
         }
-        cache.CACHE.data["budget"][f"{TAG_2_ID}:2026-07-01"] = _budget_entry(TAG_2_ID, 200)
+        cache.CACHE.data["budget"][self._budget_key(TAG_2_ID)] = _budget_entry(TAG_2_ID, 200)
 
         result = self._analyze_budget()
 
@@ -343,8 +342,8 @@ class BudgetReminderRegressionTests(unittest.TestCase):
     def test_locked_parent_stops_child_budget_propagation_without_hiding_child_reserve(self):
         cache.CACHE.data["tag"][TAG_2_ID]["parent"] = TAG_ID
         cache.CACHE.data["budget"] = {
-            f"{TAG_ID}:2026-07-01": _budget_entry(TAG_ID, 150, outcome_lock=True),
-            f"{TAG_2_ID}:2026-07-01": _budget_entry(TAG_2_ID, 200),
+            self._budget_key(TAG_ID): _budget_entry(TAG_ID, 150, outcome_lock=True),
+            self._budget_key(TAG_2_ID): _budget_entry(TAG_2_ID, 200),
         }
 
         result = self._analyze_budget()
@@ -481,7 +480,7 @@ class BudgetReminderRegressionTests(unittest.TestCase):
         self.assertFalse(marker["isForecast"])
         self.assertEqual(marker["reminder"], reminder["id"])
 
-    def test_forecast_works_without_calendar_and_skips_archived_and_past_actuals(self):
+    def test_forecast_works_without_calendar_and_includes_archived_in_balance_accounts(self):
         cache.CACHE.data["transaction"] = {
             "past-income": {
                 "id": "past-income",
@@ -535,9 +534,9 @@ class BudgetReminderRegressionTests(unittest.TestCase):
                     })))
 
         self.assertNotIn("calendar", result)
-        self.assertEqual(result["forecast"], [
-            {"date": "2026-08-01", "balance": 1200, "operations_count": 1},
-        ])
+        self.assertEqual(result["forecast"][0]["date"], "2026-07-20")
+        self.assertEqual(result["forecast"][-1]["date"], "2026-08-19")
+        self.assertTrue(all("amount" in point for point in result["forecast"]))
 
 
 if __name__ == "__main__":

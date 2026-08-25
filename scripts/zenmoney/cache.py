@@ -78,6 +78,9 @@ class Cache:
 
     def apply_diff(self, diff: dict[str, Any]) -> None:
         tags_changed = False
+        prepared_budget = None
+        if diff.get("budget"):
+            prepared_budget = self._store_from_items("budget", diff["budget"])
         self._apply_server_timestamp(diff)
         for key in _ENTITY_KEYS:
             items = diff.get(key)
@@ -85,7 +88,8 @@ class Cache:
                 continue
             if key == "tag":
                 tags_changed = True
-            self.data[key].update(self._store_from_items(key, items))
+            store = prepared_budget if key == "budget" else self._store_from_items(key, items)
+            self.data[key].update(store or {})
         # deletions
         tags_changed = self._apply_deletions(diff, tags_changed)
         if tags_changed:
@@ -93,12 +97,20 @@ class Cache:
 
     def apply_force_fetch_diff(self, diff: dict[str, Any], entity_types: list[str] | set[str] | tuple[str, ...]) -> None:
         tags_changed = False
-        self._apply_server_timestamp(diff)
         replacement_types = {entity_type for entity_type in entity_types if entity_type in _ENTITY_KEYS}
+        budget_items = diff.get("budget", [])
+        prepared_budget = None
+        if "budget" in replacement_types or budget_items:
+            prepared_budget = self._store_from_items("budget", budget_items)
+        self._apply_server_timestamp(diff)
         for key in replacement_types:
             if key == "tag":
                 tags_changed = True
-            self.data[key] = self._store_from_items(key, diff.get(key, []))
+            self.data[key] = (
+                prepared_budget
+                if key == "budget"
+                else self._store_from_items(key, diff.get(key, []))
+            ) or {}
         for key in _ENTITY_KEYS:
             if key in replacement_types:
                 continue
@@ -107,7 +119,8 @@ class Cache:
                 continue
             if key == "tag":
                 tags_changed = True
-            self.data[key].update(self._store_from_items(key, items))
+            store = prepared_budget if key == "budget" else self._store_from_items(key, items)
+            self.data[key].update(store or {})
         tags_changed = self._apply_deletions(diff, tags_changed)
         if tags_changed:
             self._invalidate_tag_indexes()
@@ -147,8 +160,15 @@ class Cache:
 
     @staticmethod
     def _budget_key(b: dict) -> str:
+        user = b.get("user")
+        if user is None:
+            raise ValueError("Budget entity is missing required field: user")
         tag = b.get("tag")
-        return f"{'null' if tag is None else tag}:{b.get('date', '')}"
+        return (
+            f"{'null' if user is None else user}:"
+            f"{'null' if tag is None else tag}:"
+            f"{b.get('date', '')}"
+        )
 
     # -- helpers ------------------------------------------------------------
 

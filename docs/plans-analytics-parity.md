@@ -36,19 +36,24 @@ APK 26.6 подтверждает: `Budget.date` — календарный anch
 - «Баланс vs Расходы»;
 - «Доходы vs Расходы».
 
-APK хранит три внутренних значения `SmartBudgetBalanceMode`: `BALANCE`, `BUDGET_LIMIT`, `EXCLUDE_OPENING_BALANCE`. UI «Доходы vs Расходы» сохраняет `EXCLUDE_OPENING_BALANCE`; UI «Баланс vs Расходы» использует один из двух режимов с начальным балансом. Точное различие `BALANCE` и `BUDGET_LIMIT` требует contract test.
+APK хранит `SmartBudgetBalanceMode` как `balance`, `budgetLimit`, `excludeOpeningBalance`. Современный UI сохраняет `EXCLUDE_OPENING_BALANCE` для «Доходы vs Расходы» и `BALANCE` при переключении обратно на «Баланс vs Расходы». Старый `BUDGET_LIMIT` имеет отдельную формулу и противоречивое поведение начального баланса, поэтому runtime возвращает явную unsupported-ошибку вместо нормализации.
 
-Для переводов используются восемь направленных `EXCLUDE_TRANSFER_*`-настроек: отдельно `to/from` для накоплений, кредитов, долгов и прочих собственных счетов. Переключатели UI «учитывать» инвертированы относительно этих exclude-флагов. Таблица ниже фиксирует доступные элементы управления и один обезличенный пример конфигурации. Она не задаёт продуктовые defaults.
+`user.planSettings` приходит через обычный `/v8/diff/` как JSON-строка массива. Переключатели UI «учитывать» инвертированы: отсутствующий `EXCLUDE_*` включает направление. Storage default — `BALANCE` и пустой set; локальных guessed defaults больше нет.
 
-| Переключатель | Направление | Пример состояния | Возможные поля API | Доказательство |
-|---|---|---:|---|---|
-| Входящий баланс | поступления | включён | начало периода и `Account.inBalance` | Наблюдение UI; формула открыта |
-| Перевод из накоплений | поступления | включён | `Account.savings`, стороны `Transaction` | Наблюдение UI |
-| Перевод на накопления | расходы | включён | `Account.savings`, стороны `Transaction` | Наблюдение UI |
-| Перевод с кредитного счёта | поступления | включён | тип счёта, стороны `Transaction` | Наблюдение UI; набор типов открыт |
-| Платёж по кредиту или кредитной карте | расходы | включён | тип счёта, стороны `Transaction` | Наблюдение UI; набор типов открыт |
-| Долги | оба направления | выключен | тип счёта, стороны `Transaction` | Наблюдение UI; семантика открыта |
-| Другие переводы между своими счетами | оба направления | выключен | `Account.inBalance`, стороны `Transaction` | Наблюдение UI |
+| Периметр | Plans effect | Управляющая настройка |
+|---|---|---|
+| balance → balance | нейтральный, обе стороны сохранены | — |
+| off-balance savings → balance | income по income-side | `EXCLUDE_TRANSFER_FROM_SAVINGS` |
+| balance → off-balance savings | expense по outcome-side | `EXCLUDE_TRANSFER_TO_SAVINGS` |
+| off-balance loan/credit card → balance | income по income-side | `EXCLUDE_TRANSFER_FROM_LOANS` |
+| balance → off-balance loan/credit card | expense по outcome-side | `EXCLUDE_TRANSFER_TO_LOANS` |
+| debt → balance | income по income-side | `EXCLUDE_TRANSFER_FROM_DEBTS` |
+| balance → debt | expense по outcome-side | `EXCLUDE_TRANSFER_TO_DEBTS` |
+| other off-balance → balance | income по income-side | `EXCLUDE_TRANSFER_FROM_OTHER_ACCOUNTS` |
+| balance → other off-balance | expense по outcome-side | `EXCLUDE_TRANSFER_TO_OTHER_ACCOUNTS` |
+| off-balance → off-balance | нет Plans effect, обе стороны сохранены | — |
+
+Endpoint precedence совпадает с APK: debt; затем `type=loan` или `type=ccard && creditLimit>0`; затем `type=deposit` или `savings=true`; затем остальные известные собственные счета. Неизвестный endpoint не маскируется как other.
 
 Подтверждённая формула дневного итога:
 
@@ -61,7 +66,7 @@ totalIncomes  = startBalance
 balanceLeftover = totalIncomes - totalExpenses
 ```
 
-`startBalance = 0`, когда начальный остаток исключён. Иначе приложение берёт фактический баланс до начала месяца, а для будущего месяца — рекурсивный итог предыдущего дня. Точная селекция `BALANCE` против `BUDGET_LIMIT` остаётся открытой из-за R8-обфускации.
+`startBalance = 0` для plain `EXCLUDE_OPENING_BALANCE`; `INCLUDE_OPENING_BALANCE` включает его обратно. В `BALANCE` он включён режимом. Приложение берёт фактический баланс до начала месяца, а для будущего месяца — рекурсивный итог предыдущего дня. `BUDGET_LIMIT` остаётся unsupported из-за подтверждённого расхождения двух APK consumers.
 
 ### Разница по категории
 
@@ -91,9 +96,11 @@ rowTotal = fact + R
 
 Факт, план и обработанный план поднимаются к родителям. Бюджеты детей поднимаются только через unlocked-родителя; locked-родитель сохраняет собственный `B`. Остаток дерева считается postorder: `R_final(node) = max(R_self(node), sum(R_final(children)))`. Итог берёт только корневые категории. Агрегат `ALL` не добавляется поверх них в Plans.
 
-Политики приложения соответствуют enum `REFUNDS`, `INCOME_OUTCOME_AND_REFUNDS`, `NONE`. В balance-mode приложение принудительно использует `NONE`. Для `INCOME_OUTCOME_AND_REFUNDS` после построения дерева категорий вычисляется `delta = income - expense`; знак оставляет разницу на доходной или расходной стороне, затем поправка поднимается к родителям.
+Политики приложения соответствуют enum `REFUNDS`, `INCOME_OUTCOME_AND_REFUNDS`, `NONE`; сохранённый default — `REFUNDS`, а balance-mode принудительно использует `NONE`.
 
-Открытый вопрос: какое сочетание `Transaction`, основных и дополнительных тегов считается возвратом. До ответа нельзя молча определять возврат по знаку суммы или названию категории. Политики с возвратами не получают выдуманный default и не реализуются до закрытия вопроса.
+Для `REFUNDS` APK использует только основную категорию операции. Противоположная операция вычитается как возврат, только если `incomeAccount == outcomeAccount` и видимость категории односторонняя: `showOutcome=true, showIncome=false` для возврата расхода либо обратное сочетание для возврата дохода. Операция между разными счетами остаётся обычным фактом, а категория, видимая с обеих сторон, не получает refund-netting. Эти поля приходят в API как `Tag.showIncome` и `Tag.showOutcome`.
+
+Для `INCOME_OUTCOME_AND_REFUNDS` после построения дерева категорий вычисляется `delta = income - expense`; знак оставляет разницу на доходной или расходной стороне. Компенсационная поправка на собственном значении родителя сохраняет точный post-tree итог без двойного счёта детей. `NONE` сохраняет обе raw-стороны.
 
 ### Прогноз
 
@@ -132,12 +139,12 @@ rowTotal = fact + R
 | Расходы по категориям | период, счета, primary/additional categories | дерево категорий и `outcome` | `currency_mode=split`; primary tag группирует, additional tags фильтруют | `get_analytics(report=outcome, group_by=category, currency_mode=split)` |
 | Расходы по магазинам | период, счета, места | `outcome` по merchant/payee | `currency_mode=split` | `get_analytics(report=outcome, group_by=merchant, currency_mode=split)` |
 | Доходы по категориям | период, счета, категории | дерево категорий и `income` | `currency_mode=split` | `get_analytics(report=income, group_by=category, currency_mode=split)` |
-| Сравнение периодов | два или больше period resolver outputs | значения периодов, absolute/percent delta | одна валюта на series или отдельные series | отдельный report tool |
+| Сравнение периодов | текущий и до 12 предыдущих period resolver outputs | income, outcome, residue и delta | историческая конвертация в основную валюту | `get_income_outcome_comparison` |
 | Тренды расходов | последовательность периодов | `last-first`, процент к `abs(first)`, fallback при нуле | одна series на валюту и scope | отдельный report tool |
-| Динамика баланса | дата/период, scope счетов | balance series и запас денег | основная отчётная валюта только по явной conversion policy | отдельный report tool |
-| Движение денег | период, счета, classifier переводов | inflow, outflow, net movement | `currency_mode=split` | отдельный report tool после shared classifier; не часть `get_analytics` |
+| Динамика баланса | дата/период, scope счетов | восстановленная balance series и направление тренда | основная или явно выбранная валюта, курс на дату точки | `get_balance_trend` |
+| Движение денег | период, счета | inflow, outflow, residue/overspending, weights | native-currency buckets | `get_money_flow`; не часть `get_analytics` |
 | Plans | billing period и режим Plans | подтверждённый `balanceLeftover` и category reserve | политика Plans | `analyze_budget_detailed` |
-| Budget старой версии | месяц, category budgets | старый метод `BUDGET` или `MEAN` | отдельная политика отчёта | вне первой версии до отдельного контракта |
+| Category report | период, направление, TAG/PAYEE, policy разницы | actual, `BUDGET` или исторический `MEAN`, comparison | историческая конвертация в основную валюту | `get_category_report` |
 
 Наблюдаемые фильтры включают:
 
@@ -150,7 +157,9 @@ rowTotal = fact + R
 - политику разницы по категориям;
 - места и магазины.
 
-`net` и движение денег — разные контракты. `get_analytics` не возвращает общий показатель движения денег и не принимает aggregate/all-запрос, пока не появится отдельный money-movement contract. Для смешанных валют отчёт возвращает группы по валютам без общей суммы. Запрос `currency_mode=scalar` завершается структурированной ошибкой `MIXED_CURRENCY`; общая сумма без подтверждённого курса и даты пересчёта запрещена.
+`net` и движение денег — разные контракты. `get_analytics` сохраняет native-currency split и не выполняет неявную конвертацию; `get_money_flow` также возвращает отдельные native-currency buckets. Category report, comparison и balance trend, напротив, явно строят одну series: они запрашивают исторический курс на дату операции/точки и используют текущий `Instrument.rate` только как fallback. `currency_mode=scalar` у базового `get_analytics` завершается `MIXED_CURRENCY`, если в scope больше одной валюты.
+
+Четыре advanced tools используют тот же строгий resolver периода и `account_scope=all|in_balance|selected`. Category report применяет `BUDGET` либо `MEAN` и точную category-difference policy. Comparison поддерживает `WHOLE_PERIOD`; `AVERAGE_VALUES` для диапазона длиннее 31 дня возвращает `UNSUPPORTED_CALCULATION`, потому что APK-формула длинного усреднения не подтверждена. Balance trend восстанавливает исторические holdings из текущих остатков и синхронизированных транзакций, поэтому источник явно указан в metadata.
 
 Строгий контракт `get_analytics`:
 
@@ -238,7 +247,7 @@ Top-level navigation Android 26.6 включает «Счета», «Опера�
 5. Состояния `processed` и `deleted` относятся к `ReminderMarker` и определяют его участие в плане и прогнозе.
 6. Удаляющие tombstones и монотонный `serverTimestamp` относятся к применению `/v8/diff/`.
 7. Изменение через API считается подтверждённым, только если force-fetch возвращает ожидаемые поля сущности или ожидаемое состояние удаления. Новый `serverTimestamp` без подтверждения самой сущности недостаточен.
-8. Пока `factWithRefund` не реализован, результат Plans явно возвращает `category_difference_policy=none`; другие политики нельзя молча считать по raw fact.
+8. `factWithRefund` использует сохранённую policy в income-vs-expense и принудительный `NONE` в balance-mode; raw `fact` остаётся отдельным полем и используется в итоговой формуле вместе с резервом.
 9. `aggregate_budget` (`ALL`), `category_budget` и остаточный резерв Plans — разные поля. `ALL` не участвует в `for_balance` покатегорийного Plans.
 
 Минимальные входы общего classifier:
@@ -247,21 +256,22 @@ Top-level navigation Android 26.6 включает «Счета», «Опера�
 |---|---|---|
 | Граница баланса | `Account.inBalance` обеих сторон | Подтверждено официальной help-статьёй |
 | Накопления | `Account.savings`, стороны `Transaction` | Поля API подтверждены; UI-семантика наблюдалась |
-| Кредит, кредитная карта, долг | тип и подтип счёта, стороны `Transaction` | Точный набор значений и направление открыты |
-| Категория и возврат | основные и дополнительные теги `Transaction` | Определение возврата открыто |
+| Кредит, кредитная карта, долг | тип/`creditLimit`, обе стороны `Transaction` | Debt имеет приоритет; затем `loan` или `ccard && creditLimit>0`; направление задаётся balance-boundary side |
+| Категория и возврат | первый tag, `Tag.showIncome/showOutcome`, обе стороны account | Возврат требует одинаковый account и одностороннюю видимость основной категории |
 
 ## Открытые вопросы
 
 - Чем отличаются внутренние режимы `BALANCE` и `BUDGET_LIMIT` при одинаковом наборе переключателей?
-- Как вычисляется `factWithRefund` для каждой политики разницы и набора тегов?
-- Как складываются budgets родительской и дочерних категорий?
-- Как lock-семантика должна агрегироваться при бюджете одновременно на родителе и дочерних категориях?
 - Переносится ли перерасход или остаток бюджета в следующий период?
-- Как ZenMoney определяет возврат и доходно-расходную категорию?
-- Какой курс, дата курса и отчётная валюта используются для смешанных валют?
 - Какой горизонт применяется к прогнозу и как marker связывается с фактической транзакцией?
 - Какой часовой пояс и локаль задают границу платёжного периода?
-- Участвуют ли архивные и закрытые счета в scope отчётов и classifier?
+
+Подтверждённые ответы, которые больше не являются открытыми вопросами:
+
+- budgets детей поднимаются через unlocked-родителя; locked-родитель сохраняет собственный budget, а facts/planned/processed продолжают подниматься;
+- Plans включает любой счёт с `inBalance=true`, в том числе архивный, и исключает `inBalance=false` из opening/facts кроме внешней стороны boundary transfer;
+- APK конвертирует сумму в основную валюту пользователя курсом на дату операции или снимка, запрашивает историю через `POST /instrument-rates/` и использует текущий `Instrument.rate` только как fallback.
+- refund определяется основной категорией, одинаковым account на обеих сторонах и односторонней парой `showIncome/showOutcome`; `INCOME_OUTCOME_AND_REFUNDS` net-ит уже агрегированное дерево.
 
 Каждый вопрос закрывается одним из четырёх способов: официальным источником, надёжно восстановленным выражением APK, обезличенным наблюдением существующего профиля или явно согласованным ограничением первой версии. Создание тестового профиля не требуется. Поведение, которое R8 не позволил восстановить однозначно, не считается подтверждённым только по декомпиляции.
 
@@ -273,7 +283,6 @@ Top-level navigation Android 26.6 включает «Счета», «Опера�
 - объединение валют без подтверждённой политики пересчёта;
 - скрытая аппроксимация отчёта, для которого недостаточно API-данных;
 - новые режимы сверх двух режимов, доступных в проверенной версии приложения.
-- Budget старой версии до появления отдельного контракта.
 
 ## Приёмка постановки
 

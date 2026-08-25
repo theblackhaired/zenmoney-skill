@@ -2,7 +2,7 @@
 
 Script-based CLI skill for personal finance management through the ZenMoney API.
 
-The skill currently exposes 24 tools for accounts, transactions, budgets, reminders, analytics, and ML suggestions.
+The skill currently exposes 28 tools for accounts, transactions, Plans, budgets, reminders, analytics, and ML suggestions.
 
 ## How it works
 
@@ -30,7 +30,7 @@ Windows notes:
 - If you prefer the Windows launcher, `py -3 scripts/cli.py ...` is equivalent.
 - If your environment only exposes `python3`, substitute it manually.
 
-## Tools (24)
+## Tools (28)
 
 **Read:**
 - `get_accounts` - list accounts with balances
@@ -41,6 +41,10 @@ Windows notes:
 - `analyze_budget_detailed` - detailed budget analysis with `balance_vs_expense` and `income_vs_expense`
 - `get_reminders` - scheduled payments and markers
 - `get_analytics` - income, outcome, and net aggregations
+- `get_category_report` - category/payee report with budget or historical-mean comparison and ZenMoney difference modes
+- `get_money_flow` - income/outcome flow, residue, overspending, and weights by native currency
+- `get_income_outcome_comparison` - selected and preceding period comparison
+- `get_balance_trend` - reconstructed historical balance trend for the selected account perimeter
 - `suggest` - ML category and merchant suggestions
 - `get_merchants` - merchant search
 - `check_auth_status` - verify token validity
@@ -55,7 +59,7 @@ Windows notes:
 
 ## Period contract
 
-Read/report tools (`get_transactions`, `get_analytics`) accept exactly one period selector:
+Read/report tools (`get_transactions`, `get_analytics`, and the four advanced analytics reports) accept exactly one period selector:
 
 - named `period=billing_period|week|month|year` with integer `period_offset` (`0` current, `-1` previous);
 - or an exact custom range with both inclusive `start_date` and `end_date`.
@@ -84,6 +88,8 @@ Billing days 29-31 follow Android 26.6: when the requested day does not exist, t
 - Filter dimensions combine with AND; values inside one selected dimension combine with OR. Empty selected lists are invalid, unknown entity IDs return `ENTITY_NOT_FOUND`, and unknown arguments or singular aliases are rejected.
 - Money-movement totals are not part of `get_analytics` until a separate money-movement contract exists.
 - Full Analytics output contract: [docs/plans-analytics-parity.md](docs/plans-analytics-parity.md).
+
+The four advanced reports reuse the same strict period and account-perimeter contracts. They convert monetary values with historical `/instrument-rates/` data and use current instrument rates only as an explicit fallback. `get_category_report` supports `REFUNDS`, `INCOME_OUTCOME_AND_REFUNDS`, and `NONE`; the saved mode defaults to `REFUNDS`. `AVERAGE_VALUES` in the income/outcome comparison fails explicitly for ranges longer than 31 days while the APK formula remains unconfirmed.
 
 ## Setup
 
@@ -149,9 +155,10 @@ Configuration options:
 
 - `token` - optional fallback token source; prefer `ZENMONEY_TOKEN`
 - `billing_period_start_day` - required for `period=billing_period`; integer 1..31; missing days roll to day 1 of the next month
-- `budget_mode` - `balance_vs_expense` or `income_vs_expense`
-- `budget_mode_configured` - remembers whether budget mode setup has already been completed
-- `budget_modes` - per-mode transfer classification flags
+- `budget_mode` - optional local override: `balance_vs_expense` or `income_vs_expense`; otherwise the synced ZenMoney user mode is used
+- `plan_user_id` - required only when a family sync contains multiple users and the Plans preference owner cannot be selected unambiguously
+- `plan_settings_override` - optional explicit list of ZenMoney `PlanSetting` values; otherwise synced `user.planSettings` is used
+- `difference_calculation_mode` - optional `REFUNDS`, `INCOME_OUTCOME_AND_REFUNDS`, or `NONE`; defaults to `REFUNDS`, while balance mode forces `NONE`
 - `round_balance_to_integer` - rounds forecast and balance output to integer rubles
 - `accounts_meta` - user-maintained account descriptions merged into budget analysis output
 
@@ -162,12 +169,14 @@ Configuration options:
 
 ## Budget analysis modes
 
-`analyze_budget_detailed` supports two modes:
+`analyze_budget_detailed` supports the two current Plans UI modes:
 
-- `income_vs_expense` - recommended mode focused on actual income versus spending
-- `balance_vs_expense` - broader balance model that includes transfers and off-balance movements
+- `income_vs_expense` - `EXCLUDE_OPENING_BALANCE` plus the eight synced directed transfer exclusions
+- `balance_vs_expense` - `BALANCE`; includes opening balance and every transfer that crosses the balance perimeter
 
-You can switch modes with `setup_budget_mode` or by updating `config.json`.
+By default the skill reads `user.planBalanceMode` and JSON-encoded `user.planSettings` from the normal `/v8/diff/` cache. You can switch modes locally with `setup_budget_mode` or `config.json`; no guessed per-mode dictionaries are used. The old `BUDGET_LIMIT` SmartBudget formula fails explicitly until its conflicting APK branches have a dedicated contract.
+
+If synced user preferences are unavailable, the report fails explicitly. A complete offline override for `income_vs_expense` therefore needs both `budget_mode` and `plan_settings_override`; `balance_vs_expense` has no active transfer exclusions.
 
 Plans calls require `period=billing_period`; use `period_offset=-1` for the previous plan period.
 

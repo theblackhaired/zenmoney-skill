@@ -4,7 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -17,27 +17,9 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 def _budget_config() -> dict:
     return {
-        "budget_mode_configured": True,
         "budget_mode": "income_vs_expense",
-        "budget_modes": {
-            "income_vs_expense": {
-                "label": "Income vs Expense",
-                "description": "Test config",
-                "count_all_movements": False,
-                "income": {
-                    "from_savings": True,
-                    "from_credit": False,
-                    "from_debt": False,
-                    "from_other_off_balance": False,
-                },
-                "expense": {
-                    "to_savings": False,
-                    "to_credit": True,
-                    "to_debt": False,
-                    "to_other_off_balance": False,
-                },
-            }
-        },
+        "plan_settings_override": [],
+        "difference_calculation_mode": "NONE",
         "accounts_meta": {},
         "round_balance_to_integer": True,
     }
@@ -45,6 +27,13 @@ def _budget_config() -> dict:
 
 class AnalyzeBudgetDetailedCurrencyAuditTests(unittest.TestCase):
     def setUp(self):
+        rate_patch = patch(
+            "zenmoney.instrument_rates.transport._api_post",
+            new_callable=AsyncMock,
+            return_value=[],
+        )
+        rate_patch.start()
+        self.addCleanup(rate_patch.stop)
         cache.CACHE = cache.Cache()
         cache.CACHE.data["instrument"] = {
             "1": {"id": 1, "shortTitle": "RUB", "title": "Russian Ruble", "rate": 1},
@@ -101,7 +90,8 @@ class AnalyzeBudgetDetailedCurrencyAuditTests(unittest.TestCase):
             },
         }
 
-    def test_rejects_mixed_currency_scalar_aggregates(self):
+    def test_mixed_currency_scalar_aggregates_use_exchange_difference(self):
+        cache.CACHE.data["user"] = {"1": {"id": 1}}
         config_payload = _budget_config()
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -111,27 +101,40 @@ class AnalyzeBudgetDetailedCurrencyAuditTests(unittest.TestCase):
             with patch.object(budget_tools, "_cfg_path", config_path), \
                  patch.object(validation, "_today", return_value="2026-04-15"), \
                  patch.object(config, "_load_config", return_value={"billing_period_start_day": 1}):
-                with self.assertRaisesRegex(ValueError, "mixed currencies"):
+                result = json.loads(
                     asyncio.run(
-                        tools.tool_analyze_budget_detailed(
-                            {"period": "billing_period"}
-                        )
+                        tools.tool_analyze_budget_detailed({"period": "billing_period"})
                     )
+                )
+
+        self.assertNotIn("status", result)
+        self.assertEqual(result["summary"]["exchange_difference"]["currency"], "RUB")
+        self.assertIn("fact", result["summary"]["exchange_difference"])
+
+    def test_missing_synced_plan_preferences_fail_without_complete_local_policy(self):
+        for config_payload in ({"accounts_meta": {}}, {"budget_mode": "income_vs_expense"}):
+            with self.subTest(config=config_payload), tempfile.TemporaryDirectory() as temp_dir:
+                config_path = Path(temp_dir) / "config.json"
+                config_path.write_text(json.dumps(config_payload), encoding="utf-8")
+
+                with patch.object(budget_tools, "_cfg_path", config_path), \
+                     patch.object(config, "_load_config", return_value={"billing_period_start_day": 1}):
+                    with self.assertRaisesRegex(ValueError, "preferences are unavailable"):
+                        asyncio.run(tools.tool_analyze_budget_detailed({
+                            "period": "billing_period",
+                            "show_forecast": False,
+                            "show_calendar": False,
+                        }))
 
     def test_billing_rollover_reads_budget_from_logical_calendar_month(self):
         cache.CACHE.data["transaction"] = {}
-        captured = {}
-
-        async def fake_get_budgets(args):
-            captured["month"] = args["month"]
-            return "[]"
+        cache.CACHE.data["account"]["acct-usd"]["inBalance"] = False
 
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "config.json"
             config_path.write_text(json.dumps(_budget_config()), encoding="utf-8")
 
             with patch.object(budget_tools, "_cfg_path", config_path), \
-                 patch.object(budget_tools, "tool_get_budgets", side_effect=fake_get_budgets), \
                  patch.object(validation, "_today", return_value="2026-03-01"), \
                  patch.object(config, "_load_config", return_value={"billing_period_start_day": 31}):
                 result = json.loads(
@@ -146,14 +149,21 @@ class AnalyzeBudgetDetailedCurrencyAuditTests(unittest.TestCase):
                     )
                 )
 
-        self.assertEqual(captured["month"], "2026-02")
         self.assertEqual(result["summary"]["period"]["budget_months"], ["2026-02-01"])
         self.assertEqual(result["summary"]["period"]["billing_start_day"], 31)
 
 
 class AnalyzeBudgetDetailedTransferAmountTests(unittest.TestCase):
     def setUp(self):
+        rate_patch = patch(
+            "zenmoney.instrument_rates.transport._api_post",
+            new_callable=AsyncMock,
+            return_value=[],
+        )
+        rate_patch.start()
+        self.addCleanup(rate_patch.stop)
         cache.CACHE = cache.Cache()
+        cache.CACHE.data["user"] = {"1": {"id": 1}}
         cache.CACHE.data["instrument"] = {
             "1": {"id": 1, "shortTitle": "RUB", "title": "Russian Ruble", "rate": 1},
             "2": {"id": 2, "shortTitle": "USD", "title": "US Dollar", "rate": 90},
@@ -263,13 +273,131 @@ class AnalyzeBudgetDetailedTransferAmountTests(unittest.TestCase):
         self.assertEqual(result["summary"]["transfers"]["out"], 0)
         self.assertEqual(result["summary"]["transfers"]["in"], 300)
         self.assertEqual(result["summary"]["transfers"]["net"], -300)
-        self.assertEqual(
-            result["forecast"],
-            [
-                {"date": "2026-04-12", "balance": 1100, "operations_count": 1},
-                {"date": "2026-04-20", "balance": 1300, "operations_count": 1},
-            ],
-        )
+        self.assertEqual(result["transfers"][0]["event"]["outcome_side"]["currency"], "USD")
+        self.assertEqual(result["transfers"][0]["event"]["income_side"]["currency"], "RUB")
+        self.assertEqual(result["forecast"][0]["date"], "2026-04-01")
+        self.assertEqual(result["forecast"][-1]["date"], "2026-04-30")
+        self.assertTrue(all(point["amount"] == 0 for point in result["forecast"]))
+
+    def test_reads_synced_user_plan_mode_and_directed_exclusions(self):
+        cache.CACHE.data["user"] = {
+            "1": {
+                "id": 1,
+                "planBalanceMode": "excludeOpeningBalance",
+                "planSettings": '["EXCLUDE_TRANSFER_FROM_SAVINGS"]',
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.json"
+            config_path.write_text(json.dumps({"accounts_meta": {}}), encoding="utf-8")
+
+            with patch.object(budget_tools, "_cfg_path", config_path), \
+                 patch.object(validation, "_today", return_value="2026-04-15"), \
+                 patch.object(config, "_load_config", return_value={"billing_period_start_day": 1}):
+                result = json.loads(
+                    asyncio.run(tools.tool_analyze_budget_detailed({"period": "billing_period"}))
+                )
+
+        self.assertEqual(result["summary"]["budget_mode"], "income_vs_expense")
+        self.assertEqual(result["summary"]["plan_balance_mode"], "EXCLUDE_OPENING_BALANCE")
+        self.assertEqual(result["summary"]["transfers"]["in"], 0)
+        self.assertEqual(result["summary"]["opening_balance"]["total"], 0)
+        self.assertEqual(result["transfers"][0]["reason"], "EXCLUDE_TRANSFER_FROM_SAVINGS")
+
+    def test_balance_mode_includes_opening_and_boundary_transfers_but_not_off_balance_spending(self):
+        cache.CACHE.data["transaction"]["off-balance-expense"] = {
+            "id": "off-balance-expense",
+            "date": "2026-04-10",
+            "income": 0,
+            "outcome": 50,
+            "incomeAccount": "acct-usd-savings",
+            "outcomeAccount": "acct-usd-savings",
+            "incomeInstrument": 2,
+            "outcomeInstrument": 2,
+            "tag": [],
+        }
+        config_payload = {
+            "budget_mode": "balance_vs_expense",
+            "plan_settings_override": ["EXCLUDE_TRANSFER_FROM_SAVINGS"],
+            "accounts_meta": {},
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.json"
+            config_path.write_text(json.dumps(config_payload), encoding="utf-8")
+
+            with patch.object(budget_tools, "_cfg_path", config_path), \
+                 patch.object(validation, "_today", return_value="2026-04-15"), \
+                 patch.object(config, "_load_config", return_value={"billing_period_start_day": 1}):
+                result = json.loads(asyncio.run(tools.tool_analyze_budget_detailed({
+                    "period": "billing_period",
+                    "show_forecast": False,
+                    "show_calendar": False,
+                })))
+
+        self.assertEqual(result["summary"]["plan_balance_mode"], "BALANCE")
+        self.assertEqual(result["summary"]["plan_settings"], [])
+        self.assertEqual(result["summary"]["opening_balance"]["total"], 900)
+        self.assertEqual(result["summary"]["transfers"]["in"], 300)
+        self.assertEqual(result["summary"]["expense"]["actual"], 0)
+        self.assertEqual(result["summary"]["balance"], 1200)
+
+    def test_archived_in_balance_account_remains_in_plans_perimeter(self):
+        cache.CACHE.data["account"] = {
+            "acct-archived": {
+                "id": "acct-archived",
+                "user": 1,
+                "instrument": 1,
+                "title": "Archived RUB account",
+                "type": "checking",
+                "balance": 500,
+                "creditLimit": 0,
+                "inBalance": True,
+                "savings": False,
+                "archive": True,
+            }
+        }
+        cache.CACHE.data["transaction"] = {
+            "tx-archived-income": {
+                "id": "tx-archived-income",
+                "date": "2026-04-10",
+                "income": 100,
+                "outcome": 0,
+                "incomeAccount": "acct-archived",
+                "outcomeAccount": "acct-archived",
+                "incomeInstrument": 1,
+                "outcomeInstrument": 1,
+                "tag": [],
+            }
+        }
+        cache.CACHE.data["reminder"] = {}
+        cache.CACHE.data["reminderMarker"] = {}
+        cache.CACHE.data["user"] = {"1": {"id": 1}}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.json"
+            config_path.write_text(
+                json.dumps({
+                    "budget_mode": "balance_vs_expense",
+                    "plan_settings_override": [],
+                    "accounts_meta": {},
+                }),
+                encoding="utf-8",
+            )
+
+            with patch.object(budget_tools, "_cfg_path", config_path), \
+                 patch.object(validation, "_today", return_value="2026-04-15"), \
+                 patch.object(config, "_load_config", return_value={"billing_period_start_day": 1}):
+                result = json.loads(asyncio.run(tools.tool_analyze_budget_detailed({
+                    "period": "billing_period",
+                    "show_forecast": False,
+                    "show_calendar": False,
+                })))
+
+        self.assertEqual(result["summary"]["income"]["actual"], 100)
+        self.assertEqual(result["summary"]["opening_balance"]["total"], 400)
+        self.assertEqual(result["summary"]["balance"], 500)
 
 
 class DirtyCacheFixtureTests(unittest.TestCase):

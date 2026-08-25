@@ -11,7 +11,6 @@ from . import config
 from . import periods
 from .domain import (
     ALL_CATEGORIES_ID,
-    _BUDGET_MODE_DEFAULTS,
     _find_category_id,
     _g,
     _get_bool_arg,
@@ -35,6 +34,7 @@ from .errors import (
     UnsupportedCalculationError,
     UnsupportedCategoryFilterError,
 )
+from .transfer_classifier import PUBLIC_MODE_TO_ZM
 
 
 _VALIDATED_TOOL_KEY = "__validated_for_tool__"
@@ -50,6 +50,12 @@ _ANALYTICS_ACCOUNT_SCOPES = {"all", "in_balance", "selected"}
 _ANALYTICS_CATEGORY_SCOPES = {"all", "selected"}
 _ANALYTICS_CATEGORY_ROLES = {"primary", "additional", "any"}
 _ANALYTICS_MERCHANT_SCOPES = {"all", "selected"}
+_ADVANCED_ANALYTICS_TOOLS = {
+    "get_category_report",
+    "get_money_flow",
+    "get_income_outcome_comparison",
+    "get_balance_trend",
+}
 _PERIOD_ARGUMENTS = {
     "period",
     "period_offset",
@@ -77,12 +83,32 @@ _ANALYTICS_ARGUMENTS = _PERIOD_ARGUMENTS | {
     "merchant_ids",
     "payees",
 }
+_ADVANCED_ANALYTICS_ACCOUNT_ARGUMENTS = _PERIOD_ARGUMENTS | {
+    "account_scope",
+    "account_ids",
+}
+_CATEGORY_REPORT_ARGUMENTS = _ADVANCED_ANALYTICS_ACCOUNT_ARGUMENTS | {
+    "direction",
+    "group_by",
+    "budget_method",
+    "comparison_periods",
+    "difference_calculation_mode",
+}
+_COMPARISON_ARGUMENTS = _ADVANCED_ANALYTICS_ACCOUNT_ARGUMENTS | {
+    "mode",
+    "comparison_periods",
+}
+_BALANCE_TREND_ARGUMENTS = _ADVANCED_ANALYTICS_ACCOUNT_ARGUMENTS | {
+    "currency_filter",
+    "currency",
+}
 _PLANS_ARGUMENTS = {
     "period",
     "period_offset",
     "budget_mode",
     "show_forecast",
     "show_calendar",
+    "difference_calculation_mode",
 }
 _ACCOUNT_TYPES = {"cash", "ccard", "checking"}
 _REMINDER_INTERVALS = {"day", "week", "month", "year"}
@@ -651,10 +677,107 @@ def validate_tool_args(name: str, args: dict) -> dict:
             raise InvalidArgumentError(
                 "merchant_ids and payees are valid only when merchant_scope=selected"
             )
+    elif name in _ADVANCED_ANALYTICS_TOOLS:
+        accepted_arguments = {
+            "get_category_report": _CATEGORY_REPORT_ARGUMENTS,
+            "get_money_flow": _ADVANCED_ANALYTICS_ACCOUNT_ARGUMENTS,
+            "get_income_outcome_comparison": _COMPARISON_ARGUMENTS,
+            "get_balance_trend": _BALANCE_TREND_ARGUMENTS,
+        }[name]
+        unknown_arguments = sorted(set(normalized) - accepted_arguments)
+        if unknown_arguments:
+            raise InvalidArgumentError(
+                f"Unknown {name} arguments: {', '.join(unknown_arguments)}",
+                {
+                    "unknown_arguments": unknown_arguments,
+                    "accepted_arguments": sorted(accepted_arguments),
+                },
+            )
+        resolved_period = normalize_strict_period(normalized)
+        normalized["start_date"] = resolved_period["start_date"]
+        normalized["end_date"] = resolved_period["end_date"]
+        normalized["resolved_period"] = resolved_period
+        normalized["account_scope"] = get_enum_arg(
+            normalized,
+            "account_scope",
+            _ANALYTICS_ACCOUNT_SCOPES,
+            default="in_balance",
+        )
+        account_ids_present = "account_ids" in normalized
+        normalized["account_ids"] = get_analytics_selector_ids(normalized, "account_ids")
+        if normalized["account_scope"] == "selected":
+            if not normalized["account_ids"]:
+                raise InvalidArgumentError("account_ids must be non-empty when account_scope=selected")
+            unknown_ids = [
+                account_id
+                for account_id in normalized["account_ids"]
+                if not _cache.CACHE.get_account(account_id)
+            ]
+            if unknown_ids:
+                raise EntityNotFoundError(
+                    "Selected analytics accounts were not found",
+                    {"entity_type": "account", "ids": unknown_ids},
+                )
+        elif account_ids_present:
+            raise InvalidArgumentError("account_ids is valid only when account_scope=selected")
+
+        if name == "get_category_report":
+            normalized["direction"] = get_enum_arg(
+                normalized, "direction", {"INCOME", "OUTCOME"}, default="OUTCOME"
+            )
+            normalized["group_by"] = get_enum_arg(
+                normalized, "group_by", {"TAG", "PAYEE"}, default="TAG"
+            )
+            normalized["budget_method"] = get_enum_arg(
+                normalized, "budget_method", {"BUDGET", "MEAN"}, default="BUDGET"
+            )
+            normalized["difference_calculation_mode"] = get_enum_arg(
+                normalized,
+                "difference_calculation_mode",
+                {"REFUNDS", "INCOME_OUTCOME_AND_REFUNDS", "NONE"},
+            )
+            normalized["comparison_periods"] = get_non_negative_int_arg(
+                normalized, "comparison_periods", 3
+            )
+        elif name == "get_income_outcome_comparison":
+            normalized["mode"] = get_enum_arg(
+                normalized,
+                "mode",
+                {"WHOLE_PERIOD", "AVERAGE_VALUES"},
+                default="WHOLE_PERIOD",
+            )
+            normalized["comparison_periods"] = get_non_negative_int_arg(
+                normalized, "comparison_periods", 3
+            )
+        elif name == "get_balance_trend":
+            normalized["currency_filter"] = get_enum_arg(
+                normalized,
+                "currency_filter",
+                {"USER", "POPULAR"},
+                default="USER",
+            )
+            currency = normalized.get("currency")
+            if isinstance(currency, bool) or (
+                currency is not None and not isinstance(currency, (str, int))
+            ):
+                raise InvalidArgumentError("currency must be an instrument id or code")
+            if isinstance(currency, str) and not currency.strip():
+                raise InvalidArgumentError("currency must not be empty")
+            normalized["currency"] = currency
+
+        if normalized.get("comparison_periods", 0) > 12:
+            raise InvalidArgumentError("comparison_periods must not exceed 12")
     elif name == "get_merchants":
         normalized["limit"] = get_non_negative_int_arg(normalized, "limit", 50)
         normalized["offset"] = get_non_negative_int_arg(normalized, "offset", 0)
     elif name == "setup_budget_mode":
+        unknown_arguments = sorted(
+            set(normalized) - {"mode", "difference_calculation_mode"}
+        )
+        if unknown_arguments:
+            raise InvalidArgumentError(
+                f"Unknown setup_budget_mode arguments: {', '.join(unknown_arguments)}"
+            )
         mode = _g("mode", normalized)
         if not mode:
             raise InvalidArgumentError("Parameter 'mode' is required")
@@ -663,6 +786,11 @@ def validate_tool_args(name: str, args: dict) -> dict:
                 f"Invalid mode: {mode}. Must be 'balance_vs_expense' or 'income_vs_expense'"
             )
         normalized["mode"] = mode
+        normalized["difference_calculation_mode"] = get_enum_arg(
+            normalized,
+            "difference_calculation_mode",
+            {"REFUNDS", "INCOME_OUTCOME_AND_REFUNDS", "NONE"},
+        )
     elif name == "analyze_budget_detailed":
         unknown_arguments = sorted(set(normalized) - _PLANS_ARGUMENTS)
         if unknown_arguments:
@@ -679,10 +807,15 @@ def validate_tool_args(name: str, args: dict) -> dict:
             raise InvalidArgumentError("analyze_budget_detailed requires period=billing_period")
         if "budget_mode" in normalized:
             mode = normalized["budget_mode"]
-            if mode not in _BUDGET_MODE_DEFAULTS:
+            if mode not in PUBLIC_MODE_TO_ZM:
                 raise InvalidArgumentError(
-                    f"Unknown budget_mode: {mode}. Available: {sorted(_BUDGET_MODE_DEFAULTS)}"
+                    f"Unknown budget_mode: {mode}. Available: {sorted(PUBLIC_MODE_TO_ZM)}"
                 )
+        normalized["difference_calculation_mode"] = get_enum_arg(
+            normalized,
+            "difference_calculation_mode",
+            {"REFUNDS", "INCOME_OUTCOME_AND_REFUNDS", "NONE"},
+        )
         resolved_period = normalize_strict_period(normalized)
         normalized["start_date"] = resolved_period["start_date"]
         normalized["end_date"] = resolved_period["end_date"]

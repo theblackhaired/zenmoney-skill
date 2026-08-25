@@ -102,53 +102,6 @@ class CacheTagIndexTests(unittest.TestCase):
         self.assertIn("food-out", fourth)
 
 
-class InitialBalanceCalculationTests(unittest.TestCase):
-    def test_initial_balance_accepts_transactions_stored_as_dict_by_id(self):
-        data = {
-            "account": [
-                {
-                    "id": "acct-1",
-                    "balance": 1000,
-                    "instrument": "RUB",
-                    "inBalance": True,
-                    "archive": False,
-                }
-            ],
-            "instrument": [],
-            "transaction": {
-                "tx-income-after-start": {
-                    "id": "tx-income-after-start",
-                    "date": "2026-04-10",
-                    "incomeAccount": "acct-1",
-                    "income": 200,
-                    "outcomeAccount": "other",
-                    "outcome": 0,
-                },
-                "tx-outcome-after-start": {
-                    "id": "tx-outcome-after-start",
-                    "date": "2026-04-12",
-                    "incomeAccount": "other",
-                    "income": 0,
-                    "outcomeAccount": "acct-1",
-                    "outcome": 50,
-                },
-                "tx-before-start": {
-                    "id": "tx-before-start",
-                    "date": "2026-03-30",
-                    "incomeAccount": "acct-1",
-                    "income": 999,
-                    "outcomeAccount": "other",
-                    "outcome": 0,
-                },
-            },
-        }
-
-        self.assertEqual(
-            domain._calculate_initial_balance_impl(data, "2026-04-01"),
-            850,
-        )
-
-
 class ToolErrorTests(unittest.TestCase):
     def test_tool_error_str_returns_message(self):
         exc = validation.ToolError("CODE", "boom")
@@ -306,6 +259,7 @@ class BooleanValidationTests(unittest.TestCase):
             validation.get_date_arg_or_today({"date": ""}, "date")
 
     def test_create_budget_all_alias_uses_aggregate_tag(self):
+        cache.CACHE.data["user"] = {"123": {"id": 123}}
         cache.CACHE.data["account"] = {
             "acc-1": {"id": "acc-1", "user": 123, "instrument": 1, "title": "Card"},
         }

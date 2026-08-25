@@ -193,7 +193,7 @@ class StateStoreRegressionTests(unittest.TestCase):
                         {"id": "tx-keep", "outcome": 1},
                     ],
                     "budget": [
-                        {"tag": "old-tag", "date": "2026-07-01", "outcome": 10},
+                        {"user": 1, "tag": "old-tag", "date": "2026-07-01", "outcome": 10},
                     ],
                     "tag": [
                         {"id": "old-tag", "title": "Old"},
@@ -211,8 +211,8 @@ class StateStoreRegressionTests(unittest.TestCase):
                         "serverTimestamp": 2,
                         "transaction": [{"id": "tx-keep", "outcome": 2}],
                         "budget": [
-                            {"tag": None, "date": "2026-07-01", "outcome": 100},
-                            {"tag": "new-tag", "date": "2026-07-01", "outcome": 200},
+                            {"user": 1, "tag": None, "date": "2026-07-01", "outcome": 100},
+                            {"user": 1, "tag": "new-tag", "date": "2026-07-01", "outcome": 200},
                         ],
                         "tag": [{"id": "new-tag", "title": "New"}],
                         "deletion": [{"object": "account", "id": "account-delete"}],
@@ -226,7 +226,7 @@ class StateStoreRegressionTests(unittest.TestCase):
         self.assertEqual(saved["transaction"], [{"id": "tx-keep", "outcome": 2}])
         self.assertEqual(
             sorted(cache.CACHE.data["budget"]),
-            ["new-tag:2026-07-01", "null:2026-07-01"],
+            ["1:new-tag:2026-07-01", "1:null:2026-07-01"],
         )
         self.assertNotIn("old-tag", cache.CACHE.tags_by_id())
         self.assertIn("new-tag", cache.CACHE.tags_by_id())
@@ -366,14 +366,7 @@ class StateStoreRegressionTests(unittest.TestCase):
             config_path = Path(temp_dir) / "config.json"
             cache_path.write_text('{"serverTimestamp":', encoding="utf-8")
             config_path.write_text(
-                json.dumps({
-                    "budget_modes": {
-                        "income_vs_expense": {
-                            "label": "Income vs Expense",
-                            "description": "Mode description",
-                        }
-                    }
-                }),
+                json.dumps({"budget_modes": {"stale": {"count_all_movements": True}}}),
                 encoding="utf-8",
             )
 
@@ -392,9 +385,12 @@ class StateStoreRegressionTests(unittest.TestCase):
             saved = json.loads(config_path.read_text(encoding="utf-8"))
 
         self.assertTrue(parsed["success"])
-        self.assertEqual(parsed["label"], "Income vs Expense")
+        self.assertEqual(parsed["plan_balance_mode"], "EXCLUDE_OPENING_BALANCE")
+        self.assertIsNone(parsed["plan_settings"])
+        self.assertEqual(parsed["settings_source"], "unavailable_no_synced_user")
         self.assertEqual(saved["budget_mode"], "income_vs_expense")
-        self.assertTrue(saved["budget_mode_configured"])
+        self.assertNotIn("budget_mode_configured", saved)
+        self.assertNotIn("budget_modes", saved)
         mocked_sync.assert_not_awaited()
 
     def test_account_meta_migration_uses_config_state_store(self):

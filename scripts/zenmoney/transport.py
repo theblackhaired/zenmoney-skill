@@ -59,7 +59,7 @@ async def _close_client() -> None:
         _client = None
 
 
-async def _api_post(endpoint: str, body: dict) -> dict:
+async def _api_post(endpoint: str, body: dict) -> Any:
     """POST to ZenMoney API, returns parsed JSON."""
     if not config.TOKEN:
         raise RuntimeError("ZENMONEY_TOKEN is not set. Set env var or add to config.json")

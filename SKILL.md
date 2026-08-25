@@ -1,6 +1,6 @@
 ---
 name: zenmoney
-description: "Personal finance management through ZenMoney API — 24 tools for accounts, transactions, budgets, reminders, analytics, and ML suggestions. Triggers: money, spending, budgets, accounts, financial management."
+description: "Personal finance management through ZenMoney API — 28 tools for accounts, transactions, Plans, budgets, reminders, analytics, and ML suggestions. Triggers: money, spending, budgets, accounts, financial management."
 metadata:
   openclaw:
     requires:
@@ -9,7 +9,7 @@ metadata:
 
 # ZenMoney Personal Finance Assistant
 
-24 tools для ZenMoney API. Все возвращают JSON.
+28 tools для ZenMoney API. Все возвращают JSON.
 
 ## Проверка готовности (при каждом вызове)
 
@@ -69,7 +69,7 @@ For `get_transactions` and `get_analytics`, select exactly one form:
 
 `period=week` requires `first_weekday=0..6` (`0` Monday). `analyze_budget_detailed` accepts only `period=billing_period`. Old magic values inside `start_date` and incomplete custom ranges are rejected.
 
-## Tool Reference (24 tools)
+## Tool Reference (28 tools)
 
 **Read:**
 - `get_accounts` — `include_archived`
@@ -78,8 +78,12 @@ For `get_transactions` and `get_analytics`, select exactly one form:
 - `get_instruments` — `include_all`
 - `get_budgets` — `month`(req, yyyy-MM)
 - `get_reminders` — `include_processed`, `active_only`, `limit`, `markers_limit`, `offset`, `marker_from`(yyyy-MM-dd), `marker_to`(yyyy-MM-dd), `category`(name), `type`(expense/income/transfer/all)
-- `analyze_budget_detailed` — `period`(req: billing_period), `period_offset`, `budget_mode`, `show_forecast`, `show_calendar`
+- `analyze_budget_detailed` — `period`(req: billing_period), `period_offset`, `budget_mode`, `difference_calculation_mode`, `show_forecast`, `show_calendar`
 - `get_analytics` — named `period` + optional `period_offset`, or exact `start_date` + `end_date`; `first_weekday` for week; `report`(req: income/outcome/net), `group_by`(category/account/merchant; default category), `currency_mode`(split/scalar; default split), strict account/category/merchant scopes
+- `get_category_report` — strict period; `direction`(INCOME/OUTCOME), `group_by`(TAG/PAYEE), `budget_method`(BUDGET/MEAN), `comparison_periods`, `difference_calculation_mode`, account scope
+- `get_money_flow` — strict period and account scope; returns native-currency flow buckets, residue/overspending, and weights
+- `get_income_outcome_comparison` — strict period; `mode`(WHOLE_PERIOD/AVERAGE_VALUES), `comparison_periods`, account scope
+- `get_balance_trend` — strict period and account scope; optional `currency_filter` and `currency`
 - `suggest` — `payee`(req)
 - `get_merchants` — `search`, `limit`, `offset`
 - `check_auth_status` — no args
@@ -105,6 +109,10 @@ For `get_transactions` and `get_analytics`, select exactly one form:
 | Баланс, счета | `get_accounts()` |
 | Расходы за период | `get_transactions(period="month", type="expense")` |
 | Аналитика расходов | `get_analytics(period="month", report="outcome", group_by="category", currency_mode="split")` |
+| План/факт по категориям | `get_category_report(period="billing_period", direction="OUTCOME")` |
+| Денежный поток | `get_money_flow(period="month")` |
+| Доходы против расходов | `get_income_outcome_comparison(period="month")` |
+| Динамика баланса | `get_balance_trend(period="month")` |
 | Добавить расход/доход | `suggest(payee)` → `create_transaction(...)` |
 | Перевод между счетами | `create_transaction(type="transfer", account_id, to_account_id)` |
 | Бюджет на месяц | `get_budgets(month)` |
@@ -156,6 +164,9 @@ python scripts/cli.py --call '{"tool":"get_analytics","arguments":{"start_date":
 - Merchant ID имеет приоритет над `payee`; `payees` сравниваются после NFC-нормализации точным способом с учётом регистра.
 - Ответ возвращает нормализованные `filters` и `policies`. Неизвестные аргументы и единственные формы `account_id`, `category_id`, `merchant_id`, `payee` отклоняются.
 - Движение денег проектируется как отдельный отчёт и не входит в `get_analytics`.
+- `get_category_report` применяет `REFUNDS`, `INCOME_OUTCOME_AND_REFUNDS` или `NONE`; возврат — противоположная операция на том же счёте с основной категорией, видимой только на целевой стороне.
+- Четыре advanced-отчёта используют общий строгий period/account scope; конвертация берёт исторический курс на дату и только затем текущий fallback.
+- `AVERAGE_VALUES` для диапазона длиннее 31 дня возвращает явную unsupported-ошибку, пока точная APK-формула не подтверждена.
 
 ## Платёжный период (config.json)
 
@@ -192,12 +203,12 @@ If a private profile is needed, keep it outside the tracked repository or in an 
 - Запиши значение в `config.json` → `billing_period_start_day`
 
 ### 2. Выбери режим работы с планами (бюджетом)
-- При первом запуске `analyze_budget_detailed` система предложит выбрать режим работы
+- По умолчанию `analyze_budget_detailed` читает режим и переключатели из синхронизированного объекта пользователя ZenMoney
 - Доступно 2 режима (аналогично настройкам ZenMoney → Планы → Настройки → Режим работы):
-  - **"Баланс vs Расходы"** (`balance_vs_expense`) — учитывает все движения денег, включая счета вне баланса
+  - **"Баланс vs Расходы"** (`balance_vs_expense`) — включает входящий баланс и все переводы, пересекающие границу балансовых счетов
   - **"Доходы vs Расходы"** (`income_vs_expense`) — исключает лишние переводы, фокус на реальных доходах/расходах
-- Выбери подходящий режим — он сохранится в `config.json` → `budget_mode_configured: true`
-- Изменить режим позже можно через `setup_budget_mode(mode="...")`
+- Локально переопределить режим и политику разницы можно через `setup_budget_mode(mode="...", difference_calculation_mode="...")`; `balance_vs_expense` всегда применяет `NONE`
+- При нескольких пользователях в семейном профиле укажи авторитетный `plan_user_id`, иначе расчёт остановится с явной ошибкой неоднозначности
 
 ### 3. Заполни описания счетов (accounts_meta в config.json)
 - Вызови `get_accounts()` — список всех счетов
