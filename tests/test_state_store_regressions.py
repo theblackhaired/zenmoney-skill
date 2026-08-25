@@ -269,6 +269,60 @@ class StateStoreRegressionTests(unittest.TestCase):
 
         self.assertEqual(json.loads(result), {"category_id": "food"})
 
+    def test_analytics_selected_entities_are_revalidated_after_prefetch_sync(self):
+        entity_id = "11111111-1111-1111-1111-111111111111"
+        cases = {
+            "account": {
+                "store": "account",
+                "entity": {"id": entity_id, "title": "Account", "inBalance": True},
+                "arguments": {"account_scope": "selected", "account_ids": [entity_id]},
+            },
+            "category": {
+                "store": "tag",
+                "entity": {"id": entity_id, "title": "Category", "parent": None},
+                "arguments": {"category_scope": "selected", "category_ids": [entity_id]},
+            },
+            "merchant": {
+                "store": "merchant",
+                "entity": {"id": entity_id, "title": "Merchant"},
+                "arguments": {"merchant_scope": "selected", "merchant_ids": [entity_id]},
+            },
+        }
+
+        for entity_type, case in cases.items():
+            with self.subTest(entity_type=entity_type), tempfile.TemporaryDirectory() as temp_dir:
+                cache_path = Path(temp_dir) / ".cache.json"
+                cache_path.write_text(
+                    json.dumps({"serverTimestamp": 1, case["store"]: [case["entity"]]}),
+                    encoding="utf-8",
+                )
+                cache.CACHE = cache.Cache()
+
+                async def fake_sync():
+                    cache.CACHE.data[case["store"]] = {}
+                    return {}
+
+                arguments = {
+                    "start_date": "2026-07-01",
+                    "end_date": "2026-07-31",
+                    "report": "outcome",
+                    **case["arguments"],
+                }
+                with patch.object(config, "CACHE_PATH", cache_path), \
+                     patch.object(config, "_cfg_path", Path(temp_dir) / "config.json"), \
+                     patch.object(dispatch, "_sync", AsyncMock(side_effect=fake_sync)), \
+                     patch.object(dispatch, "_close_client", AsyncMock(return_value=None)):
+                    result = asyncio.run(dispatch.run_tool(
+                        "get_analytics",
+                        arguments,
+                        {"get_analytics": AsyncMock(return_value='{"status":"ok"}')},
+                        lambda: None,
+                    ))
+
+                parsed = json.loads(result)
+                self.assertEqual(parsed["code"], "ENTITY_NOT_FOUND")
+                self.assertEqual(parsed["details"]["entity_type"], entity_type)
+
     def test_dispatch_uses_supplied_account_meta_migration_callback(self):
         migrate = Mock()
 

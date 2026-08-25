@@ -252,6 +252,39 @@ class GetAnalyticsSelectorContractTests(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertEqual(result["code"], "INVALID_ARGUMENT")
 
+    def test_singular_filter_aliases_are_rejected_with_migration_details(self):
+        aliases = {
+            "account_id": RUB_ACCOUNT_ID,
+            "category_id": FOOD_TAG_ID,
+            "merchant_id": MERCHANT_STORE_ID,
+            "payee": "Store",
+        }
+        for alias, value in aliases.items():
+            with self.subTest(alias=alias):
+                result = _run_analytics({
+                    "start_date": "2026-07-01",
+                    "end_date": "2026-07-31",
+                    "report": "outcome",
+                    alias: value,
+                })
+
+                self.assertEqual(result["status"], "error")
+                self.assertEqual(result["code"], "INVALID_ARGUMENT")
+                self.assertEqual(result["details"]["removed_argument"], alias)
+
+    def test_unknown_argument_is_rejected_by_strict_allowlist(self):
+        result = _run_analytics({
+            "start_date": "2026-07-01",
+            "end_date": "2026-07-31",
+            "report": "outcome",
+            "unexpected_filter": True,
+        })
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["code"], "INVALID_ARGUMENT")
+        self.assertEqual(result["details"]["unknown_arguments"], ["unexpected_filter"])
+        self.assertNotIn("unexpected_filter", result["details"]["accepted_arguments"])
+
     def test_turnover_report_returns_unsupported_calculation(self):
         result = _run_analytics({
             "start_date": "2026-07-01",

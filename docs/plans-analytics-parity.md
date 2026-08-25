@@ -150,7 +150,7 @@ rowTotal = fact + R
 
 `net` и движение денег — разные контракты. `get_analytics` не возвращает общий показатель движения денег и не принимает aggregate/all-запрос, пока не появится отдельный money-movement contract. Для смешанных валют отчёт возвращает группы по валютам без общей суммы. Запрос `currency_mode=scalar` завершается структурированной ошибкой `MIXED_CURRENCY`; общая сумма без подтверждённого курса и даты пересчёта запрещена.
 
-Первый breaking-срез `get_analytics`:
+Строгий контракт `get_analytics`:
 
 - `report` обязателен и принимает только `income`, `outcome`, `net`;
 - `group_by` опционален: по умолчанию `category`; принимает `category`, `account`, `merchant`;
@@ -159,36 +159,38 @@ rowTotal = fact + R
 - `category_scope` опционален: по умолчанию `all`; принимает `all`, `selected`;
 - `category_role` принимает `primary`, `additional`, `any` и разрешён только при `category_scope=selected`;
 - `merchant_scope` опционален: по умолчанию `all`; принимает `all`, `selected`;
-- `account_ids`, `category_ids`, `merchant_ids`, `payees` — plural-only selected-фильтры;
+- `account_ids`, `category_ids`, `merchant_ids`, `payees` используются только во множественной форме и только для `selected`-фильтров;
 - `currency_mode=scalar` разрешён только для одной валюты, иначе возвращает `MIXED_CURRENCY`;
 - поля ответа используют `snake_case`;
-- стабильные ключи групп имеют префиксы `category:`, `account:`, `merchant:`; при группировке `merchant` fallback без сущности merchant использует ключ `payee:`;
+- стабильные ключи групп имеют префиксы `category:`, `account:`, `merchant:`; при группировке `merchant` операция без merchant ID использует запасной ключ `payee:`;
 - `tag_policy=primary_tag`: первая категория — ключ группировки, дополнительные теги не размножают сумму по группам;
 - `currency_conversion=none`: валюта берётся сначала из соответствующей стороны транзакции, затем из инструмента счёта;
 - `unknown_currency=separate_bucket`: неизвестная валюта получает отдельный bucket, а не `RUB`;
 - `transfers=excluded`: переводы остаются исключены из этого среза до подтверждения shared classifier.
 
-Нормативный filter contract:
+Нормативный контракт фильтров:
 
 - фильтр счёта применяется к стороне операции, соответствующей `report`; `income` фильтрует income-side account, `outcome` фильтрует outcome-side account, `net` применяет report-side правило к обеим сторонам, участвующим в расчёте;
-- `account_scope=all` не фильтрует по `Account.inBalance`;
+- `account_scope=all` не фильтрует по `Account.inBalance` и сохраняет операции с неизвестным счётом в группе `account:unknown`;
 - `account_scope=in_balance` включает только аккаунты с `inBalance=true`; аккаунты с отсутствующим `inBalance` исключаются;
-- `account_scope=selected` требует непустой `account_ids`; архивные аккаунты разрешены, если они подходят выбранному scope;
+- `account_scope=selected` требует непустой `account_ids`;
+- архивный счёт не исключается сам по себе: он участвует, если соответствует выбранному `account_scope`;
 - `category_scope=all` не фильтрует по тегам;
 - `category_scope=selected` требует непустой `category_ids`; `category_role` задаёт, где искать тег: `primary`, `additional` или `any`;
 - `category_role` без `category_scope=selected` невалиден;
-- группировка по категориям всегда строится по primary tag; additional tags не создают групп;
-- unknown tag и uncategorized — разные состояния и разные группы;
+- группировка по категориям всегда строится по первому тегу; дополнительные теги не создают групп;
+- неизвестный tag ID сохраняется как `category:<id>` с именем `Unknown Category`; только пустой список тегов даёт `category:uncategorized`;
 - `merchant_scope=all` не фильтрует по merchant/payee;
 - `merchant_scope=selected` требует хотя бы один непустой фильтр `merchant_ids` или `payees`;
-- если у транзакции есть merchant entity, merchant имеет приоритет над payee; payee используется только как fallback;
-- `payees` сравниваются после NFC normalization как exact case-sensitive строки;
-- разные dimensions (`account`, `category`, `merchant`) объединяются через AND;
-- значения внутри одного selected dimension объединяются через OR;
-- пустой selected-фильтр невалиден;
-- неизвестные account/category/merchant IDs возвращают `ENTITY_NOT_FOUND`;
-- ответ echo'ит resolved filters и policies;
-- unknown arguments и singular aliases (`account_id`, `category_id`, `merchant_id`, `payee`) отклоняются.
+- если у операции есть merchant ID, он имеет приоритет над `payee`; `payee` используется только при отсутствии merchant ID;
+- `payees` сравниваются после NFC-нормализации точным способом с учётом регистра;
+- измерения `account`, `category`, `merchant` объединяются через AND;
+- значения внутри одного `selected`-измерения объединяются через OR;
+- пустой `selected`-фильтр невалиден;
+- неизвестные ID счетов, категорий и merchants возвращают `ENTITY_NOT_FOUND`;
+- ответ всегда содержит нормализованные фильтры: `filters.account={scope,ids}`, `filters.category={scope,role,ids}`, `filters.merchant={scope,ids,payees}`;
+- политики фильтрации имеют точные значения `account_filter=report_side`, `category_filter=exact_tag_id`, `merchant_identity=merchant_then_payee_exact`;
+- неизвестные аргументы и единственные формы `account_id`, `category_id`, `merchant_id`, `payee` отклоняются.
 
 Нормативный output contract:
 

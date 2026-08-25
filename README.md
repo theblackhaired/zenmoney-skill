@@ -79,7 +79,7 @@ Currently this applies to `get_transactions`, `get_analytics`, and `analyze_budg
 - `transfers` are `excluded`.
 - `unknown_currency` is `separate_bucket`.
 - Output field names use `snake_case`.
-- Stable group keys are prefixed: `category:`, `account:`, `merchant:`; merchant grouping may use `payee:` as the fallback key when no merchant entity is available.
+- Stable group keys are prefixed: `category:`, `account:`, `merchant:`; merchant grouping uses `payee:` only when a transaction has no merchant ID.
 - Filter dimensions combine with AND; values inside one selected dimension combine with OR. Empty selected lists are invalid, unknown entity IDs return `ENTITY_NOT_FOUND`, and unknown arguments or singular aliases are rejected.
 - Money-movement totals are not part of `get_analytics` until a separate money-movement contract exists.
 - Full Analytics output contract: [docs/plans-analytics-parity.md](docs/plans-analytics-parity.md).

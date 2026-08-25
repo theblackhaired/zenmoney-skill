@@ -148,13 +148,13 @@ python scripts/cli.py --call '{"tool":"get_analytics","arguments":{"start_date":
 - `merchant_scope` опционален: по умолчанию `all`; для `selected` нужен непустой фильтр `merchant_ids` и/или `payees`.
 - Политики фиксированы: `tag_policy=primary_tag`, `currency_conversion=none`, `transfers=excluded`, `unknown_currency=separate_bucket`.
 - Поля ответа используют `snake_case`.
-- Стабильные ключи групп имеют префиксы `category:`, `account:`, `merchant:`; при `group_by="merchant"` fallback без сущности merchant использует ключ `payee:`.
+- Стабильные ключи групп имеют префиксы `category:`, `account:`, `merchant:`; при `group_by="merchant"` операция без merchant ID использует запасной ключ `payee:`.
 - Фильтры разных измерений объединяются через AND; значения внутри одного selected-измерения объединяются через OR.
-- Empty selected lists невалидны; неизвестные account/category/merchant IDs возвращают `ENTITY_NOT_FOUND`.
+- Пустые selected-списки невалидны; неизвестные ID счетов, категорий и merchants возвращают `ENTITY_NOT_FOUND`.
 - `account_scope="in_balance"` применяет фильтр к стороне операции, соответствующей `report`; аккаунты с отсутствующим `inBalance` исключаются, архивные аккаунты разрешены.
-- Группировка по категориям всегда primary; unknown tag и uncategorized — разные группы.
-- В merchant grouping сущность merchant имеет приоритет над payee; `payees` сравниваются как NFC exact case-sensitive строки.
-- Ответ возвращает resolved filters и policies. Unknown arguments и singular aliases (`account_id`, `category_id`, `merchant_id`, `payee`) отклоняются.
+- Группировка по категориям всегда использует первый тег; неизвестный tag ID и отсутствие тегов — разные группы.
+- Merchant ID имеет приоритет над `payee`; `payees` сравниваются после NFC-нормализации точным способом с учётом регистра.
+- Ответ возвращает нормализованные `filters` и `policies`. Неизвестные аргументы и единственные формы `account_id`, `category_id`, `merchant_id`, `payee` отклоняются.
 - Движение денег проектируется как отдельный отчёт и не входит в `get_analytics`.
 
 ## Платёжный период (config.json)
