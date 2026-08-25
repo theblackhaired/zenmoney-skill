@@ -8,7 +8,7 @@ from typing import Any
 
 from .. import periods
 from ..analytics.category_difference import apply_category_difference
-from ..errors import ToolError, UnsupportedCalculationError
+from ..errors import InvalidArgumentError, ToolError, UnsupportedCalculationError
 from ..instrument_rates import (
     InstrumentRateCache,
     exchange_converter,
@@ -173,6 +173,15 @@ def _period_events(ctx: PlansContext, start: str, end: str) -> list[PlanEvent]:
         if item.get("id") is not None
     }
     for marker in ctx.markers:
+        if marker.get("isForecast") is True:
+            continue
+        marker_state = marker.get("state")
+        if marker_state == "deleted":
+            continue
+        if marker_state not in {"planned", "processed"}:
+            raise InvalidArgumentError(
+                "reminderMarker state must be planned, processed, or deleted"
+            )
         if not start <= str(marker.get("date", "")) <= end:
             continue
         reminder = reminders.get(marker.get("reminder"))
