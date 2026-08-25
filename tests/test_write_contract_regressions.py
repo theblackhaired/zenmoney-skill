@@ -267,10 +267,14 @@ class WriteContractValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(InvalidArgumentError, "Invalid group_by"):
             validation.validate_tool_args("get_analytics", {
                 "start_date": "2026-07-01",
+                "report": "outcome",
                 "group_by": "currency",
             })
 
-        normalized = validation.validate_tool_args("get_analytics", {"start_date": "2026-07-01"})
+        normalized = validation.validate_tool_args("get_analytics", {
+            "start_date": "2026-07-01",
+            "report": "outcome",
+        })
         self.assertEqual(normalized["group_by"], "category")
 
     def test_create_account_credit_limit_must_be_nonnegative(self):

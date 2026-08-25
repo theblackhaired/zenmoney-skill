@@ -72,3 +72,8 @@ class InvalidCategoryError(ToolError):
 class EntityNotFoundError(ToolError):
     def __init__(self, message: str, details: dict[str, Any] | None = None):
         super().__init__("ENTITY_NOT_FOUND", message, details)
+
+
+class UnsupportedCalculationError(ToolError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None):
+        super().__init__("UNSUPPORTED_CALCULATION", message, details)

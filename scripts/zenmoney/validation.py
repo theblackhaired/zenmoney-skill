@@ -31,6 +31,7 @@ from .errors import (
     InvalidMonthError,
     InvalidUUIDError,
     ToolError,
+    UnsupportedCalculationError,
     UnsupportedCategoryFilterError,
 )
 
@@ -42,8 +43,9 @@ _RELATIVE_DAY_RE = re.compile(r"^[+-]?\d+d$")
 _TRANSACTION_TYPES = {"expense", "income", "transfer"}
 _TRANSACTION_FILTER_TYPES = _TRANSACTION_TYPES
 _REMINDER_FILTER_TYPES = _TRANSACTION_TYPES | {"all"}
-_ANALYTICS_TYPES = {"expense", "income", "all"}
+_ANALYTICS_REPORTS = {"income", "outcome", "net"}
 _ANALYTICS_GROUP_BY = {"category", "account", "merchant"}
+_ANALYTICS_CURRENCY_MODES = {"split", "scalar"}
 _ACCOUNT_TYPES = {"cash", "ccard", "checking"}
 _REMINDER_INTERVALS = {"day", "week", "month", "year"}
 
@@ -426,11 +428,61 @@ def validate_tool_args(name: str, args: dict) -> dict:
                 raise UnsupportedCategoryFilterError("Category filter 'ALL' is not supported by get_reminders")
             normalized["category_id"] = category_id
     elif name == "get_analytics":
+        for removed_argument in ("type", "metric", "scalar_total"):
+            if removed_argument not in normalized:
+                continue
+            removed_value = normalized[removed_argument]
+            if removed_argument == "type":
+                accepted_values = {
+                    "expense": "outcome",
+                    "income": "income",
+                    "net": "net",
+                    "all": None,
+                }
+                mapped_report = accepted_values.get(removed_value)
+                migration = f" use report={mapped_report}" if mapped_report else " no direct replacement is available"
+                replacement = "report"
+            elif removed_argument == "metric":
+                accepted_values = sorted(_ANALYTICS_REPORTS)
+                migration = f" use report={removed_value}" if removed_value in _ANALYTICS_REPORTS else " use report"
+                replacement = "report"
+            else:
+                accepted_values = {False: "split", True: "scalar"}
+                mapped_mode = "scalar" if removed_value else "split"
+                migration = f" use currency_mode={mapped_mode}"
+                replacement = "currency_mode"
+            raise InvalidArgumentError(
+                f"Removed argument '{removed_argument}' is not supported;{migration}",
+                {
+                    "removed_argument": removed_argument,
+                    "replacement": replacement,
+                    "accepted_values": accepted_values,
+                },
+            )
+        if "start_date" not in normalized:
+            raise InvalidArgumentError("start_date is required")
         normalized["start_date"], normalized_end_date = normalize_period_range(normalized)
         if normalized_end_date is not None:
             normalized["end_date"] = normalized_end_date
-        normalized["type"] = get_enum_arg(normalized, "type", _ANALYTICS_TYPES, default="expense")
+        report = normalized.get("report")
+        if report == "turnover":
+            raise UnsupportedCalculationError(
+                "report=turnover is reserved until the money-movement contract is implemented",
+                {"report": report, "supported_reports": sorted(_ANALYTICS_REPORTS)},
+            )
+        if report is None:
+            raise InvalidArgumentError(
+                "report is required; accepted values: income, outcome, net",
+                {"accepted_values": sorted(_ANALYTICS_REPORTS)},
+            )
+        normalized["report"] = get_enum_arg(normalized, "report", _ANALYTICS_REPORTS)
         normalized["group_by"] = get_enum_arg(normalized, "group_by", _ANALYTICS_GROUP_BY, default="category")
+        normalized["currency_mode"] = get_enum_arg(
+            normalized,
+            "currency_mode",
+            _ANALYTICS_CURRENCY_MODES,
+            default="split",
+        )
     elif name == "get_merchants":
         normalized["limit"] = get_non_negative_int_arg(normalized, "limit", 50)
         normalized["offset"] = get_non_negative_int_arg(normalized, "offset", 0)

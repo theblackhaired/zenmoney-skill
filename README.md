@@ -12,7 +12,7 @@ The agent runner reads the repository-root `SKILL.md` and invokes the CLI:
 python scripts/cli.py --list
 python scripts/cli.py --describe get_transactions
 python scripts/cli.py --call '{"tool":"get_accounts","arguments":{}}'
-python scripts/cli.py --call '{"tool":"get_analytics","arguments":{"start_date":"2026-02-01","type":"expense","group_by":"category"}}'
+python scripts/cli.py --call '{"tool":"get_analytics","arguments":{"start_date":"2026-02-01","report":"outcome","group_by":"category","currency_mode":"split"}}'
 ```
 
 PowerShell:
@@ -40,7 +40,7 @@ Windows notes:
 - `get_budgets` - monthly budget limits
 - `analyze_budget_detailed` - detailed budget analysis with `balance_vs_expense` and `income_vs_expense`
 - `get_reminders` - scheduled payments and markers
-- `get_analytics` - spending and income aggregations
+- `get_analytics` - income, outcome, and net aggregations
 - `suggest` - ML category and merchant suggestions
 - `get_merchants` - merchant search
 - `check_auth_status` - verify token validity
@@ -63,6 +63,22 @@ Read/report tools that accept `start_date` and `end_date` now support a small sh
 - `billing_period` - expands using `config.json -> billing_period_start_day`
 
 Currently this applies to `get_transactions`, `get_analytics`, and `analyze_budget_detailed`.
+
+## Analytics contract
+
+`get_analytics` uses a breaking explicit report contract:
+
+- `report` is required: `income`, `outcome`, or `net`.
+- `group_by` is optional: `category` by default; also accepts `account` or `merchant`.
+- `currency_mode` is optional: `split` by default; also accepts `scalar`.
+- `tag_policy` is `primary_tag`.
+- `currency_conversion` is `none`.
+- `transfers` are `excluded`.
+- `unknown_currency` is `separate_bucket`.
+- Output field names use `snake_case`.
+- Stable group keys are prefixed: `category:`, `account:`, `merchant:`; merchant grouping may use `payee:` as the fallback key when no merchant entity is available.
+- Money-movement totals are not part of `get_analytics` until a separate money-movement contract exists.
+- Full Analytics output contract: [docs/plans-analytics-parity.md](docs/plans-analytics-parity.md).
 
 ## Setup
 

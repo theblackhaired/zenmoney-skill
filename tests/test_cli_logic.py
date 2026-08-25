@@ -501,7 +501,10 @@ class PeriodShorthandValidationTests(unittest.TestCase):
 
     def test_get_analytics_this_month_expands_to_full_month(self):
         with patch.object(validation, "_today", return_value="2026-04-26"):
-            normalized = validation.validate_tool_args("get_analytics", {"start_date": "this_month"})
+            normalized = validation.validate_tool_args("get_analytics", {
+                "start_date": "this_month",
+                "report": "outcome",
+            })
 
         self.assertEqual(normalized["start_date"], "2026-04-01")
         self.assertEqual(normalized["end_date"], "2026-04-30")
@@ -914,13 +917,14 @@ class GetAnalyticsCurrencySplitTests(unittest.TestCase):
         result = json.loads(asyncio.run(tools.tool_get_analytics({
             "start_date": "2026-04-01",
             "end_date": "2026-04-30",
-            "type": "expense",
+            "report": "outcome",
             "group_by": "category",
         })))
 
-        self.assertEqual(result["transactionCount"], 3)
+        self.assertEqual(result["transaction_count"], 3)
         self.assertEqual(
-            result["grandTotalByCurrency"], {"RUB": 300, "KZT": 50}
+            {currency: total["value"] for currency, total in result["totals"]["by_currency"].items()},
+            {"KZT": 50, "RUB": 300},
         )
 
         groups = result["groups"]
@@ -930,8 +934,8 @@ class GetAnalyticsCurrencySplitTests(unittest.TestCase):
         by_currency = {g["currency"]: g for g in named_foreign}
         self.assertIn("RUB", by_currency)
         self.assertIn("KZT", by_currency)
-        self.assertEqual(by_currency["RUB"]["total"], 300)
-        self.assertEqual(by_currency["KZT"]["total"], 50)
+        self.assertEqual(by_currency["RUB"]["value"], 300)
+        self.assertEqual(by_currency["KZT"]["value"], 50)
 
 
 class GetRemindersRangeValidationTests(unittest.TestCase):
@@ -1139,11 +1143,11 @@ class GetAnalyticsCategoryPathTests(unittest.TestCase):
         result = json.loads(asyncio.run(tools.tool_get_analytics({
             "start_date": "2026-04-01",
             "end_date": "2026-04-30",
-            "type": "expense",
+            "report": "outcome",
             "group_by": "category",
         })))
 
-        self.assertEqual(result["transactionCount"], 2)
+        self.assertEqual(result["transaction_count"], 2)
         groups = result["groups"]
         self.assertEqual(len(groups), 2, f"Expected 2 groups, got {len(groups)}: {groups}")
 
@@ -1152,8 +1156,10 @@ class GetAnalyticsCategoryPathTests(unittest.TestCase):
         self.assertIn("Прочее / Питание", names)
 
         by_name = {g["name"]: g for g in groups}
-        self.assertEqual(by_name["Еда / Питание"]["total"], 100)
-        self.assertEqual(by_name["Прочее / Питание"]["total"], 200)
+        self.assertEqual(by_name["Еда / Питание"]["key"], "category:food-pitanie")
+        self.assertEqual(by_name["Прочее / Питание"]["key"], "category:other-pitanie")
+        self.assertEqual(by_name["Еда / Питание"]["value"], 100)
+        self.assertEqual(by_name["Прочее / Питание"]["value"], 200)
 
 
 class GetRemindersCategoryFilterTests(unittest.TestCase):

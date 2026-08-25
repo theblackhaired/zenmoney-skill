@@ -74,7 +74,7 @@ TOOL_DOCS: dict[str, dict] = {
         "params": {"month": "str yyyy-MM (required)"},
     },
     "get_reminders": {
-        "desc": "Get scheduled payment reminders with their markers. When marker_from/marker_to are specified, filters reminders by marker dates in that period and sorts by first marker date. Without these params, uses legacy sort by startDate.",
+        "desc": "Get scheduled payment reminders with their markers. When marker_from/marker_to are specified, filters reminders by marker dates in that period and sorts by first marker date. Without these params, returns a recent summary sorted by startDate.",
         "params": {
             "marker_from": "str yyyy-MM-dd (optional) — start of marker date range (inclusive); if set then marker_to is required, and empty string is rejected",
             "marker_to": "str yyyy-MM-dd (optional) — end of marker date range (inclusive); if set then marker_from is required, and empty string is rejected",
@@ -83,7 +83,7 @@ TOOL_DOCS: dict[str, dict] = {
             "include_processed": "bool (default false)",
             "active_only": "bool (default true)",
             "limit": "int (default 50)",
-            "markers_limit": "int (default 5) — max markers per reminder (only used in legacy mode without marker_from/marker_to)",
+            "markers_limit": "int (default 5) — max markers per reminder (only used in recent-summary mode without marker_from/marker_to)",
             "offset": "int (default 0)",
         },
     },
@@ -105,12 +105,13 @@ TOOL_DOCS: dict[str, dict] = {
         },
     },
     "get_analytics": {
-        "desc": "Spending/income analytics grouped by category, account, or merchant",
+        "desc": "Income, outcome, or net analytics grouped by category, account, or merchant",
         "params": {
             "start_date": "str yyyy-MM-dd | -Nd | this_month | billing_period (required)",
             "end_date": "str yyyy-MM-dd | today | -Nd | this_month | billing_period (optional; auto-filled for this_month/billing_period)",
             "group_by": "str category|account|merchant (default category)",
-            "type": "str expense|income|all (default expense)",
+            "report": "str income|outcome|net (required); turnover is reserved and returns UNSUPPORTED_CALCULATION",
+            "currency_mode": "str split|scalar (default split); scalar requires at most one currency",
         },
     },
     "suggest": {

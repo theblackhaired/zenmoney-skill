@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import unicodedata
 from typing import Any
 
 from . import cache as _cache
@@ -11,6 +12,7 @@ from .domain import (
     _today,
     _tx_type,
 )
+from .errors import ToolError
 from .transport import _api_post, _sync
 from .validation import validate_tool_args
 
@@ -88,91 +90,164 @@ async def tool_get_analytics(args: dict) -> str:
     args = validate_tool_args("get_analytics", args)
     start_date = args["start_date"]
     end_date = args.get("end_date") or _today()
-    group_by = args.get("group_by", "category")
-    an_type = args.get("type", "expense")
+    report = args["report"]
+    group_by = args["group_by"]
+    currency_mode = args["currency_mode"]
 
     txs = [t for t in _cache.CACHE.transactions() if not t.get("deleted")]
     txs = [t for t in txs if t.get("date", "") >= start_date and t.get("date", "") <= end_date]
 
-    # Filter by type
     filtered = []
     for t in txs:
-        tt = _tx_type(t)
-        if an_type == "expense" and tt == "expense":
-            filtered.append(t)
-        elif an_type == "income" and tt == "income":
-            filtered.append(t)
-        elif an_type == "all" and tt in ("expense", "income"):
+        tx_type = _tx_type(t)
+        if tx_type not in ("expense", "income"):
+            continue
+        if (
+            report == "net"
+            or (report == "income" and tx_type == "income")
+            or (report == "outcome" and tx_type == "expense")
+        ):
             filtered.append(t)
 
-    # Group by (name, currency) so different currencies get separate buckets.
+    # A transaction's own side instrument is authoritative. The account is a
+    # fallback for older records that do not carry the instrument field.
     groups: dict[tuple[str, str], dict[str, Any]] = {}
     for tx in filtered:
-        key = "Uncategorized"
-        currency = "RUB"
+        tx_type = _tx_type(tx)
+        side = "outcome" if tx_type == "expense" else "income"
+        account_id = tx.get(f"{side}Account")
+        account = _cache.CACHE.get_account(account_id) if account_id else None
+        instrument_id = tx.get(f"{side}Instrument")
+        instrument = _cache.CACHE.get_instrument(instrument_id) if instrument_id is not None else None
+        if instrument is None and account:
+            instrument = _cache.CACHE.get_instrument(account.get("instrument"))
+        currency = instrument.get("shortTitle") if instrument else None
+        currency = currency or "UNKNOWN"
 
         if group_by == "category":
             tag_ids = tx.get("tag") or []
             if tag_ids:
-                key = _category_full_path(tag_ids[0]) or "Uncategorized"
-            acct_id = tx.get("outcomeAccount") if tx.get("outcome", 0) > 0 else tx.get("incomeAccount")
-            acct = _cache.CACHE.get_account(acct_id) if acct_id else None
-            instr = _cache.CACHE.get_instrument(acct["instrument"]) if acct else None
-            currency = instr["shortTitle"] if instr else "RUB"
+                tag_id = str(tag_ids[0])
+                group_key = f"category:{tag_id}"
+                name = _category_full_path(tag_id) or "Uncategorized"
+            else:
+                group_key = "category:uncategorized"
+                name = "Uncategorized"
         elif group_by == "account":
-            acct_id = tx.get("incomeAccount") if an_type == "income" else tx.get("outcomeAccount")
-            acct = _cache.CACHE.get_account(acct_id) if acct_id else None
-            key = acct["title"] if acct else "Unknown Account"
-            instr = _cache.CACHE.get_instrument(acct["instrument"]) if acct else None
-            currency = instr["shortTitle"] if instr else "RUB"
-        elif group_by == "merchant":
-            if tx.get("merchant"):
-                m = _cache.CACHE.get_merchant(tx["merchant"])
-                key = m["title"] if m else (tx.get("payee") or "Unknown Merchant")
-            elif tx.get("payee"):
-                key = tx["payee"]
-            acct_id = tx.get("outcomeAccount") if tx.get("outcome", 0) > 0 else tx.get("incomeAccount")
-            acct = _cache.CACHE.get_account(acct_id) if acct_id else None
-            instr = _cache.CACHE.get_instrument(acct["instrument"]) if acct else None
-            currency = instr["shortTitle"] if instr else "RUB"
-
-        composite = (key, currency)
-        if composite not in groups:
-            groups[composite] = {"income": 0, "outcome": 0, "count": 0}
-        g = groups[composite]
-        g["income"] += tx.get("income", 0)
-        g["outcome"] += tx.get("outcome", 0)
-        g["count"] += 1
-
-    grand_total_by_currency: dict[str, float] = {}
-    for (_, currency), g in groups.items():
-        if an_type == "expense":
-            inc = g["outcome"]
-        elif an_type == "income":
-            inc = g["income"]
+            group_key = f"account:{account_id}" if account_id else "account:unknown"
+            name = account["title"] if account else "Unknown Account"
         else:
-            inc = g["income"] + g["outcome"]
-        grand_total_by_currency[currency] = grand_total_by_currency.get(currency, 0) + inc
+            merchant_id = tx.get("merchant")
+            payee = tx.get("payee")
+            if merchant_id:
+                merchant = _cache.CACHE.get_merchant(merchant_id)
+                group_key = f"merchant:{merchant_id}"
+                name = merchant["title"] if merchant else (payee or "Unknown Merchant")
+            elif payee:
+                group_key = f"payee:{payee}"
+                name = payee
+            else:
+                group_key = "merchant:unknown"
+                name = "Unknown Merchant"
+
+        composite = (group_key, currency)
+        if composite not in groups:
+            groups[composite] = {
+                "key": group_key,
+                "name": name,
+                "currency": currency,
+                "income": 0,
+                "outcome": 0,
+                "transaction_count": 0,
+            }
+        group = groups[composite]
+        group["income"] += tx.get("income", 0)
+        group["outcome"] += tx.get("outcome", 0)
+        group["transaction_count"] += 1
+
+    def report_value(income: float, outcome: float) -> float:
+        if report == "income":
+            return income
+        if report == "outcome":
+            return outcome
+        return income - outcome
+
+    by_currency: dict[str, dict[str, float | int]] = {}
+    for (_, currency), group in groups.items():
+        totals = by_currency.setdefault(
+            currency,
+            {"income": 0, "outcome": 0, "value": 0, "transaction_count": 0},
+        )
+        totals["income"] += group["income"]
+        totals["outcome"] += group["outcome"]
+        totals["transaction_count"] += group["transaction_count"]
+
+    currencies = sorted(by_currency)
+    for currency in currencies:
+        totals = by_currency[currency]
+        totals["value"] = report_value(totals["income"], totals["outcome"])
+    by_currency = {currency: by_currency[currency] for currency in currencies}
 
     groups_list = []
-    for (name, currency), data in groups.items():
-        total_val = data["outcome"] if an_type == "expense" else data["income"] if an_type == "income" else data["income"] + data["outcome"]
-        entry: dict[str, Any] = {"name": name, "total": total_val, "count": data["count"], "currency": currency}
-        if an_type == "all":
-            entry["income"] = data["income"]
-            entry["outcome"] = data["outcome"]
+    for group in groups.values():
+        entry = {
+            "key": group["key"],
+            "name": group["name"],
+            "income": group["income"],
+            "outcome": group["outcome"],
+            "value": report_value(group["income"], group["outcome"]),
+            "transaction_count": group["transaction_count"],
+        }
+        if currency_mode == "split":
+            entry["currency"] = group["currency"]
         groups_list.append(entry)
-    # Sort by currency, then by total desc within currency.
-    groups_list.sort(key=lambda x: (x["currency"], -x["total"]))
 
-    return json.dumps({
-        "period": {"from": start_date, "to": end_date},
-        "type": an_type,
-        "groupBy": group_by,
-        "grandTotalByCurrency": grand_total_by_currency,
-        "transactionCount": len(filtered),
+    def sort_key(group: dict[str, Any]) -> tuple:
+        currency = group.get("currency", "")
+        magnitude = abs(group["value"]) if report == "net" else group["value"]
+        name = unicodedata.normalize("NFC", str(group["name"]))
+        key = unicodedata.normalize("NFC", str(group["key"]))
+        return currency, -magnitude, name, key
+
+    groups_list.sort(key=sort_key)
+
+    result = {
+        "period": {"start_date": start_date, "end_date": end_date},
+        "report": report,
+        "group_by": group_by,
+        "currency_mode": currency_mode,
+        "transaction_count": len(filtered),
+        "policies": {
+            "tag_policy": "primary_tag",
+            "currency_conversion": "none",
+            "transfers": "excluded",
+            "unknown_currency": "separate_bucket",
+        },
         "groups": groups_list,
-    }, ensure_ascii=False)
+    }
+
+    if currency_mode == "split":
+        result["currencies"] = currencies
+        result["totals"] = {"by_currency": by_currency}
+    else:
+        if len(currencies) > 1:
+            raise ToolError(
+                "MIXED_CURRENCY",
+                "currency_mode=scalar is unavailable for a mixed-currency report",
+                {"currencies": currencies, "currency_mode": currency_mode},
+            )
+        if currencies:
+            currency = currencies[0]
+            result["totals"] = {"currency": currency, **by_currency[currency]}
+        else:
+            result["totals"] = {
+                "currency": None,
+                "income": 0,
+                "outcome": 0,
+                "value": 0,
+                "transaction_count": 0,
+            }
+    return json.dumps(result, ensure_ascii=False)
 
 
 async def tool_suggest(args: dict) -> str:

@@ -53,7 +53,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 Примеры:
 ```bash
 python scripts/cli.py --call '{"tool":"get_accounts","arguments":{}}'
-python scripts/cli.py --call '{"tool":"get_analytics","arguments":{"start_date":"2026-02-01","type":"expense","group_by":"category"}}'
+python scripts/cli.py --call '{"tool":"get_analytics","arguments":{"start_date":"2026-02-01","report":"outcome","group_by":"category","currency_mode":"split"}}'
 python scripts/cli.py --call '{"tool":"suggest","arguments":{"payee":"Яндекс Еда"}}'
 python scripts/cli.py --list
 python scripts/cli.py --describe get_transactions
@@ -79,7 +79,7 @@ This currently applies to `get_transactions`, `get_analytics`, and `analyze_budg
 - `get_instruments` — `include_all`
 - `get_budgets` — `month`(req, yyyy-MM)
 - `get_reminders` — `include_processed`, `active_only`, `limit`, `markers_limit`, `offset`, `marker_from`(yyyy-MM-dd), `marker_to`(yyyy-MM-dd), `category`(name), `type`(expense/income/transfer/all)
-- `get_analytics` — `start_date`(req), `end_date`, `group_by`(category/account/merchant), `type`(expense/income/all)
+- `get_analytics` — `start_date`(req), `end_date`, `report`(req: income/outcome/net), `group_by`(category/account/merchant; default category), `currency_mode`(split/scalar; default split)
 - `suggest` — `payee`(req)
 - `get_merchants` — `search`, `limit`, `offset`
 - `check_auth_status` — no args
@@ -104,7 +104,7 @@ This currently applies to `get_transactions`, `get_analytics`, and `analyze_budg
 |---|---|
 | Баланс, счета | `get_accounts()` |
 | Расходы за период | `get_transactions(start_date, type="expense")` |
-| Аналитика расходов | `get_analytics(start_date, group_by="category")` |
+| Аналитика расходов | `get_analytics(start_date, report="outcome", group_by="category", currency_mode="split")` |
 | Добавить расход/доход | `suggest(payee)` → `create_transaction(...)` |
 | Перевод между счетами | `create_transaction(type="transfer", account_id, to_account_id)` |
 | Бюджет на месяц | `get_budgets(month)` |
@@ -128,7 +128,7 @@ This currently applies to `get_transactions`, `get_analytics`, and `analyze_budg
 
 **Анализ расходов:**
 ```bash
-python scripts/cli.py --call '{"tool":"get_analytics","arguments":{"start_date":"2026-02-01","end_date":"2026-02-28","type":"expense","group_by":"category"}}'
+python scripts/cli.py --call '{"tool":"get_analytics","arguments":{"start_date":"2026-02-01","end_date":"2026-02-28","report":"outcome","group_by":"category","currency_mode":"split"}}'
 ```
 
 **Добавить транзакцию:**
@@ -137,6 +137,16 @@ python scripts/cli.py --call '{"tool":"get_analytics","arguments":{"start_date":
 3. `create_transaction` с type/amount/account_id/category_ids
 
 **Проверка бюджета:** `get_budgets` + `get_analytics` + `get_accounts` → остаток
+
+## Analytics Semantics
+
+- `report` обязателен: `income`, `outcome` или `net`.
+- `group_by` опционален: по умолчанию `category`; также принимает `account` или `merchant`.
+- `currency_mode` опционален: по умолчанию `split`; также принимает `scalar`.
+- Политики фиксированы: `tag_policy=primary_tag`, `currency_conversion=none`, `transfers=excluded`, `unknown_currency=separate_bucket`.
+- Поля ответа используют `snake_case`.
+- Стабильные ключи групп имеют префиксы `category:`, `account:`, `merchant:`; при `group_by="merchant"` fallback без сущности merchant использует ключ `payee:`.
+- Движение денег проектируется как отдельный отчёт и не входит в `get_analytics`.
 
 ## Платёжный период (config.json)
 
@@ -163,7 +173,7 @@ else:
 
 ## User Profile
 
-Before performing budgets, reminders, or financial planning — read `PROFILE.md` in skill directory.
+Before performing budgets, reminders, or financial planning — read `skill/PROFILE.md`.
 It contains: billing period rule (20th–19th), account UUIDs, category UUIDs, financial plan 2026, birthday budgets, transfer rules.
 
 ## Первичная инициализация
@@ -232,7 +242,7 @@ It contains: billing period rule (20th–19th), account UUIDs, category UUIDs, f
 
 ## Режимы get_reminders
 
-### Legacy-режим (без marker_from/marker_to)
+### recent-summary mode (без marker_from/marker_to)
 Возвращает напоминания отсортированные по startDate desc. Подходит для просмотра недавних.
 
 ### Marker-режим (с marker_from + marker_to)

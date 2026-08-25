@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Replaced `get_analytics` with an explicit breaking contract:
+  - `type=expense` -> `report=outcome`
+  - `type=income` -> `report=income`
+  - `type=net` -> `report=net`
+  - `type=all` and `turnover` are removed until a separate money-movement contract exists
+- Added required Analytics argument `report` and optional defaults `group_by=category`, `currency_mode=split`.
+- Added fixed Analytics policies: `tag_policy=primary_tag`, `currency_conversion=none`, `transfers=excluded`, `unknown_currency=separate_bucket`.
+- Standardized Analytics output on `snake_case` and stable group key prefixes; `payee:` is only the merchant-grouping fallback key.
+
 ## 2026-07-24
 
 - Fixed false write failures when ZenMoney normalizes server-derived transaction fields such as `originalPayee` and operation amounts after accepting a write.

@@ -37,6 +37,70 @@ def _budget_config() -> dict:
     }
 
 
+def _expense_transaction(
+    transaction_id: str,
+    outcome: int,
+    *,
+    date: str = "2026-07-10",
+    tag_id: str = TAG_ID,
+    reminder_marker: str | None = None,
+) -> dict:
+    transaction = {
+        "id": transaction_id,
+        "date": date,
+        "income": 0,
+        "outcome": outcome,
+        "incomeAccount": ACCOUNT_ID,
+        "outcomeAccount": ACCOUNT_ID,
+        "incomeInstrument": 1,
+        "outcomeInstrument": 1,
+        "tag": [tag_id],
+    }
+    if reminder_marker is not None:
+        transaction["reminderMarker"] = reminder_marker
+    return transaction
+
+
+def _budget_entry(tag_id: str, outcome: int, *, outcome_lock: bool = False) -> dict:
+    return {
+        "tag": tag_id,
+        "date": "2026-07-01",
+        "income": 0,
+        "incomeLock": False,
+        "outcome": outcome,
+        "outcomeLock": outcome_lock,
+    }
+
+
+def _expense_reminder(*, start_date: str = "2026-07-25", tag_id: str = TAG_ID) -> dict:
+    return {
+        "id": REMINDER_ID,
+        "user": 1,
+        "incomeInstrument": 1,
+        "incomeAccount": ACCOUNT_ID,
+        "income": 0,
+        "outcomeInstrument": 1,
+        "outcomeAccount": ACCOUNT_ID,
+        "outcome": 100,
+        "tag": [tag_id],
+        "interval": "month",
+        "step": 1,
+        "points": [0],
+        "startDate": start_date,
+        "notify": True,
+    }
+
+
+def _marker(marker_id: str, date: str, state: str = "planned", outcome: int = 100) -> dict:
+    return {
+        "id": marker_id,
+        "reminder": REMINDER_ID,
+        "date": date,
+        "state": state,
+        "outcome": outcome,
+    }
+
+
 class BudgetReminderRegressionTests(unittest.TestCase):
     def setUp(self):
         cache.CACHE = cache.Cache()
@@ -70,6 +134,17 @@ class BudgetReminderRegressionTests(unittest.TestCase):
             TAG_ID: {"id": TAG_ID, "title": "Food", "parent": None},
             TAG_2_ID: {"id": TAG_2_ID, "title": "Transport", "parent": None},
         }
+
+    def _analyze_budget(self) -> dict:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.json"
+            config_path.write_text(json.dumps(_budget_config()), encoding="utf-8")
+            with patch.object(budget_tools, "_cfg_path", config_path):
+                return json.loads(asyncio.run(tools.tool_analyze_budget_detailed({
+                    "start_date": "2026-07-01",
+                    "end_date": "2026-07-31",
+                    "show_forecast": False,
+                })))
 
     def test_budget_formatter_distinguishes_aggregate_and_uncategorized(self):
         aggregate = domain._fmt_budget({
@@ -169,40 +244,111 @@ class BudgetReminderRegressionTests(unittest.TestCase):
         self.assertEqual(result["reminders"][0]["markers_total_outcome"], 300)
 
     def test_deleted_marker_state_is_excluded_from_plan_totals(self):
-        cache.CACHE.data["reminder"][REMINDER_ID] = {
-            "id": REMINDER_ID,
-            "user": 1,
-            "incomeInstrument": 1,
-            "incomeAccount": ACCOUNT_ID,
-            "income": 0,
-            "outcomeInstrument": 1,
-            "outcomeAccount": ACCOUNT_ID,
-            "outcome": 100,
-            "tag": [TAG_ID],
-            "interval": "month",
-            "step": 1,
-            "points": [0],
-            "startDate": "2026-07-25",
-            "notify": True,
-        }
+        cache.CACHE.data["reminder"][REMINDER_ID] = _expense_reminder()
         cache.CACHE.data["reminderMarker"] = {
-            "planned": {"id": "planned", "reminder": REMINDER_ID, "date": "2026-07-25", "state": "planned", "outcome": 100},
-            "processed": {"id": "processed", "reminder": REMINDER_ID, "date": "2026-07-26", "state": "processed", "outcome": 200},
-            "deleted": {"id": "deleted", "reminder": REMINDER_ID, "date": "2026-07-27", "state": "deleted", "outcome": 900},
+            "planned": _marker("planned", "2026-07-25"),
+            "processed": _marker("processed", "2026-07-26", "processed", 200),
+            "deleted": _marker("deleted", "2026-07-27", "deleted", 900),
         }
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.json"
-            config_path.write_text(json.dumps(_budget_config()), encoding="utf-8")
-            with patch.object(budget_tools, "_cfg_path", config_path):
-                result = json.loads(asyncio.run(tools.tool_analyze_budget_detailed({
-                    "start_date": "2026-07-01",
-                    "end_date": "2026-07-31",
-                    "show_forecast": False,
-                })))
+        result = self._analyze_budget()
 
         self.assertEqual(result["summary"]["expense"]["planned"], 100)
-        self.assertEqual(result["summary"]["expense"]["for_balance"], 100)
+        self.assertEqual(result["summary"]["expense"]["processed_planned"], 200)
+        self.assertEqual(result["summary"]["expense"]["for_balance"], 300)
+
+    def test_locked_budget_does_not_add_planned_marker_until_obligations_exceed_lock(self):
+        cache.CACHE.data["transaction"] = {
+            "actual": _expense_transaction("actual", 50),
+        }
+        cache.CACHE.data["budget"][f"{TAG_ID}:2026-07-01"] = _budget_entry(TAG_ID, 200, outcome_lock=True)
+        cache.CACHE.data["reminder"][REMINDER_ID] = _expense_reminder()
+        cache.CACHE.data["reminderMarker"] = {
+            "planned": _marker("planned", "2026-07-25"),
+        }
+
+        result = self._analyze_budget()
+
+        self.assertEqual(result["summary"]["expense"]["for_balance"], 200)
+
+    def test_unlocked_budget_adds_planned_marker_to_budget_floor(self):
+        cache.CACHE.data["transaction"] = {
+            "actual": _expense_transaction("actual", 250),
+        }
+        cache.CACHE.data["budget"][f"{TAG_ID}:2026-07-01"] = _budget_entry(TAG_ID, 200)
+        cache.CACHE.data["reminder"][REMINDER_ID] = _expense_reminder()
+        cache.CACHE.data["reminderMarker"] = {
+            "planned": _marker("planned", "2026-07-25"),
+        }
+
+        result = self._analyze_budget()
+
+        self.assertEqual(result["summary"]["expense"]["for_balance"], 350)
+
+    def test_processed_marker_remains_in_unlocked_budget_after_becoming_actual(self):
+        cache.CACHE.data["transaction"] = {
+            "actual": _expense_transaction("actual", 100, reminder_marker="processed"),
+        }
+        cache.CACHE.data["budget"][f"{TAG_ID}:2026-07-01"] = _budget_entry(TAG_ID, 200)
+        cache.CACHE.data["reminder"][REMINDER_ID] = _expense_reminder(start_date="2026-07-10")
+        cache.CACHE.data["reminderMarker"] = {
+            "processed": _marker("processed", "2026-07-10", "processed"),
+        }
+
+        result = self._analyze_budget()
+
+        self.assertEqual(result["summary"]["expense"]["category_difference_policy"], "none")
+        self.assertEqual(result["summary"]["expense"]["processed_planned"], 100)
+        self.assertEqual(result["summary"]["expense"]["for_balance"], 300)
+
+    def test_zero_locked_budget_does_not_reserve_planned_marker(self):
+        cache.CACHE.data["budget"][f"{TAG_ID}:2026-07-01"] = _budget_entry(TAG_ID, 0, outcome_lock=True)
+        cache.CACHE.data["reminder"][REMINDER_ID] = _expense_reminder()
+        cache.CACHE.data["reminderMarker"] = {
+            "planned": _marker("planned", "2026-07-25"),
+        }
+
+        result = self._analyze_budget()
+
+        self.assertEqual(result["summary"]["expense"]["for_balance"], 0)
+
+    def test_all_budget_is_not_added_to_plans_category_total(self):
+        cache.CACHE.data["budget"][f"{domain.ALL_CATEGORIES_ID}:2026-07-01"] = _budget_entry(
+            domain.ALL_CATEGORIES_ID,
+            1000,
+            outcome_lock=True,
+        )
+
+        result = self._analyze_budget()
+
+        self.assertEqual(result["summary"]["expense"]["budget"], 1000)
+        self.assertEqual(result["summary"]["expense"]["category_budget"], 0)
+        self.assertEqual(result["summary"]["expense"]["aggregate_budget"], 1000)
+        self.assertEqual(result["summary"]["expense"]["remaining"], 0)
+        self.assertEqual(result["summary"]["expense"]["for_balance"], 0)
+
+    def test_parent_actual_is_kept_when_child_has_remaining_reserve(self):
+        cache.CACHE.data["tag"][TAG_2_ID]["parent"] = TAG_ID
+        cache.CACHE.data["transaction"] = {
+            "parent-actual": _expense_transaction("parent-actual", 50),
+        }
+        cache.CACHE.data["budget"][f"{TAG_2_ID}:2026-07-01"] = _budget_entry(TAG_2_ID, 200)
+
+        result = self._analyze_budget()
+
+        self.assertEqual(result["summary"]["expense"]["actual"], 50)
+        self.assertEqual(result["summary"]["expense"]["for_balance"], 250)
+
+    def test_locked_parent_stops_child_budget_propagation_without_hiding_child_reserve(self):
+        cache.CACHE.data["tag"][TAG_2_ID]["parent"] = TAG_ID
+        cache.CACHE.data["budget"] = {
+            f"{TAG_ID}:2026-07-01": _budget_entry(TAG_ID, 150, outcome_lock=True),
+            f"{TAG_2_ID}:2026-07-01": _budget_entry(TAG_2_ID, 200),
+        }
+
+        result = self._analyze_budget()
+
+        self.assertEqual(result["summary"]["expense"]["for_balance"], 200)
 
     def test_create_reminder_defaults_recurring_points_to_zero_and_sets_forecast_flag(self):
         captured = {}
@@ -378,12 +524,13 @@ class BudgetReminderRegressionTests(unittest.TestCase):
             config_path = Path(temp_dir) / "config.json"
             config_path.write_text(json.dumps(_budget_config()), encoding="utf-8")
             with patch.object(budget_tools, "_cfg_path", config_path):
-                result = json.loads(asyncio.run(tools.tool_analyze_budget_detailed({
-                    "start_date": "2026-07-01",
-                    "end_date": "2026-08-31",
-                    "show_calendar": False,
-                    "show_forecast": True,
-                })))
+                with patch.object(budget_tools, "_today", return_value="2026-07-20"):
+                    result = json.loads(asyncio.run(tools.tool_analyze_budget_detailed({
+                        "start_date": "2026-07-01",
+                        "end_date": "2026-08-31",
+                        "show_calendar": False,
+                        "show_forecast": True,
+                    })))
 
         self.assertNotIn("calendar", result)
         self.assertEqual(result["forecast"], [

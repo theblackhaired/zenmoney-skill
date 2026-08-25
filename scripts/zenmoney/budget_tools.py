@@ -30,6 +30,10 @@ def _is_planned_marker(marker: dict) -> bool:
     return not _is_deleted_marker(marker) and marker.get("state", "planned") == "planned"
 
 
+def _is_processed_marker(marker: dict) -> bool:
+    return not _is_deleted_marker(marker) and marker.get("state") == "processed"
+
+
 def _budget_cache_key(category_id: str, month_date: str) -> str:
     return f"{category_id}:{month_date}"
 
@@ -280,6 +284,7 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
             budgets_map[cat_id] = {
                 "income": b.get("income", 0),
                 "outcome": b.get("outcome", 0),
+                "outcome_lock": b.get("outcomeLock", False),
                 "category_name": b.get("category"),  # Save name for debugging
             }
 
@@ -379,7 +384,9 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
                 **cat_meta,
                 "actual": 0,
                 "planned_from_reminders": 0,
+                "processed_from_reminders": 0,
                 "budget": 0,
+                "outcome_lock": False,
                 "items": [],
             }
 
@@ -412,12 +419,17 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
                 **cat_meta,
                 "actual": 0,
                 "planned_from_reminders": 0,
+                "processed_from_reminders": 0,
                 "budget": 0,
+                "outcome_lock": False,
                 "items": [],
             }
 
         remember_currency("expense", account_currency(rem.get("account_id")))
         expense_by_category[cat_key]["planned_from_reminders"] += sum(m["outcome"] for m in rem["markers"] if _is_planned_marker(m))
+        expense_by_category[cat_key]["processed_from_reminders"] += sum(
+            m["outcome"] for m in rem["markers"] if _is_processed_marker(m)
+        )
         for marker in rem["markers"]:
             if not _is_planned_marker(marker):
                 continue
@@ -433,6 +445,7 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
     for cat_key, cat_data in expense_by_category.items():
         if cat_key in budgets_map:
             cat_data["budget"] = budgets_map[cat_key]["outcome"]
+            cat_data["outcome_lock"] = budgets_map[cat_key]["outcome_lock"]
 
     # Add budget-only categories (categories with budget but no reminders/transactions)
     for cat_id, budget_data in budgets_map.items():
@@ -462,7 +475,9 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
                     **cat_meta,
                     "actual": 0,
                     "planned_from_reminders": 0,
+                    "processed_from_reminders": 0,
                     "budget": budget_data["outcome"],
+                    "outcome_lock": budget_data["outcome_lock"],
                     "items": [],
                 }
 
@@ -597,10 +612,13 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
         def aggregate_sums(node: dict, children: list[dict]) -> None:
             """Recursively aggregate sums from children to parent, preserving parent's own values."""
             if is_expense:
-                # For expenses: actual, planned_from_reminders, budget
+                # Facts and marker states always roll up. Child budgets roll up
+                # only until an explicitly locked parent, matching ZM Plans.
                 node["actual"] += sum(child["actual"] for child in children)
                 node["planned_from_reminders"] += sum(child["planned_from_reminders"] for child in children)
-                node["budget"] += sum(child["budget"] for child in children)
+                node["processed_from_reminders"] += sum(child["processed_from_reminders"] for child in children)
+                if not node.get("outcome_lock", False):
+                    node["budget"] += sum(child["budget"] for child in children)
             else:
                 # For income: actual, planned
                 node["actual"] += sum(child["actual"] for child in children)
@@ -621,7 +639,9 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
             if is_expense:
                 node["actual"] = cat_data["actual"]
                 node["planned_from_reminders"] = cat_data["planned_from_reminders"]
+                node["processed_from_reminders"] = cat_data["processed_from_reminders"]
                 node["budget"] = cat_data["budget"]
+                node["outcome_lock"] = cat_data.get("outcome_lock", False)
             else:
                 node["actual"] = cat_data["actual"]
                 node["planned"] = cat_data["planned"]
@@ -668,7 +688,9 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
                 **parent_meta,
                 "actual": 0,
                 "planned_from_reminders": 0,
+                "processed_from_reminders": 0,
                 "budget": 0,
+                "outcome_lock": False,
                 "items": [],
             }
 
@@ -714,42 +736,31 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
                 total += node.get("planned_from_reminders", 0)
         return total
 
-    def sum_leaf_for_balance(nodes):
-        """Recursively sum expenses with budget floors and reminders.
-        Formula: actual + reminders + max(0, budget - actual) = max(actual, budget) + reminders.
-        Budget and reminders are additive (independent). Budget floor uses only actual spending,
-        not reminders. Parent nodes use max(parent_val, parent_budget, children_sum) as safety net."""
-        total = 0
-        for node in nodes:
-            if node.get("children"):
-                children_sum = sum_leaf_for_balance(node["children"])
-                parent_val = node.get("actual", 0) + node.get("planned_from_reminders", 0)
-                parent_budget = node.get("budget", 0)
-                total += max(parent_val, parent_budget, children_sum)
-            else:
-                actual = node.get("actual", 0)
-                budget = node.get("budget", 0)
-                reminders = node.get("planned_from_reminders", 0)
-                total += max(actual, budget) + reminders
-        return total
+    def remaining_reserve(node: dict) -> float:
+        """Return the ZM Plans reserve for one category subtree."""
+        actual = node.get("actual", 0)
+        planned = node.get("planned_from_reminders", 0)
+        processed = node.get("processed_from_reminders", 0)
+        budget = node.get("budget", 0)
+        effective_budget = budget if node.get("outcome_lock", False) else budget + planned + processed
+
+        own_reserve = 0 if abs(effective_budget) < 0.01 else max(0, planned, effective_budget - actual)
+        children_reserve = sum(remaining_reserve(child) for child in node.get("children", []))
+        return max(own_reserve, children_reserve)
 
     aggregate_budget = budgets_map.get(ALL_CATEGORIES_ID, {}).get("outcome", 0)
-    total_expense_budget = max(aggregate_budget, sum_leaf_budgets(expense_tree))
+    category_budget = sum_leaf_budgets(expense_tree)
+    total_expense_budget = max(aggregate_budget, category_budget)
     total_expense_planned = sum_leaf_planned(expense_tree)
-    total_expense_for_balance = max(aggregate_budget, sum_leaf_for_balance(expense_tree))
+    total_expense_processed = sum(c.get("processed_from_reminders", 0) for c in expense_tree)
+    total_expense_for_balance = sum(
+        root.get("actual", 0) + remaining_reserve(root)
+        for root in expense_tree
+    )
 
-    # Recursively sum actual expenses from all leaf nodes
-    def sum_actual_recursive(nodes):
-        total = 0
-        for node in nodes:
-            if node.get("children"):
-                total += sum_actual_recursive(node["children"])
-            else:
-                total += node.get("actual", 0)
-        return total
-
-    total_expense_actual = sum_actual_recursive(expense_tree)
-    total_expense_remaining = total_expense_budget - total_expense_actual
+    # Root nodes already contain their own facts plus all child facts.
+    total_expense_actual = sum(root.get("actual", 0) for root in expense_tree)
+    total_expense_remaining = total_expense_for_balance - total_expense_actual
     total_expense_expected = total_expense_actual + total_expense_planned
 
     # Calculate transfer totals using mode-aware classify_transfer
@@ -789,12 +800,17 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
             },
             "expense": {
                 "budget": total_expense_budget,
+                "budget_scope": "configured_max_including_all",
+                "category_budget": category_budget,
+                "aggregate_budget": aggregate_budget,
                 "actual": total_expense_actual,
                 "planned": total_expense_planned,
+                "processed_planned": total_expense_processed,
+                "category_difference_policy": "none",
                 "remaining": total_expense_remaining,
                 "expected_total": total_expense_expected,
                 "for_balance": total_expense_for_balance,
-                "description": "remaining = budget - actual (UI view). for_balance = sum(max(actual+planned, budget)) per leaf (ZenMoney Plans balance)."
+                "description": "for_balance = fact + category-tree reserve under category_difference_policy=none. Unlocked budgets include planned and processed markers; locked budgets keep the explicit budget. ALL is reported separately and excluded from Plans category totals."
             },
             "transfers": {
                 "out": total_transfers_out,
