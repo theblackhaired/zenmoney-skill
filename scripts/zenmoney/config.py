@@ -183,11 +183,17 @@ def save_config(cfg: dict[str, Any]) -> None:
         write_json_state_atomic(_cfg_path, cfg, indent=2)
 
 
-def setup_budget_mode_config(mode: str) -> dict[str, Any]:
+def setup_budget_mode_config(
+    mode: str,
+    difference_calculation_mode: str | None = None,
+) -> dict[str, Any]:
     with state_file_lock(_cfg_path):
         cfg = read_json_state(_cfg_path)
         cfg["budget_mode"] = mode
-        cfg["budget_mode_configured"] = True
+        if difference_calculation_mode is not None:
+            cfg["difference_calculation_mode"] = difference_calculation_mode
+        cfg.pop("budget_mode_configured", None)
+        cfg.pop("budget_modes", None)
         write_json_state_atomic(_cfg_path, cfg, indent=2)
         return cfg
 

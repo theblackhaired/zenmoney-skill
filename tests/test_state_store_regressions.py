@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import cli
-from zenmoney import budget_tools, cache, config, dispatch, tools, transport
+from zenmoney import budget_tools, cache, config, dispatch, tools, transport, validation
 
 
 class StateStoreRegressionTests(unittest.TestCase):
@@ -69,11 +69,11 @@ class StateStoreRegressionTests(unittest.TestCase):
             config_path = Path(temp_dir) / "config.json"
             config_path.write_text('{"budget_mode":', encoding="utf-8")
 
-            with patch.object(budget_tools, "_cfg_path", config_path):
+            with patch.object(budget_tools, "_cfg_path", config_path), \
+                 patch.object(validation, "_billing_start_day", return_value=1):
                 with self.assertRaises(config.CorruptStateError):
                     asyncio.run(budget_tools.tool_analyze_budget_detailed({
-                        "start_date": "2026-07-01",
-                        "end_date": "2026-07-31",
+                        "period": "billing_period",
                     }))
 
     def test_cache_load_resets_existing_state_when_file_is_missing(self):
@@ -193,7 +193,7 @@ class StateStoreRegressionTests(unittest.TestCase):
                         {"id": "tx-keep", "outcome": 1},
                     ],
                     "budget": [
-                        {"tag": "old-tag", "date": "2026-07-01", "outcome": 10},
+                        {"user": 1, "tag": "old-tag", "date": "2026-07-01", "outcome": 10},
                     ],
                     "tag": [
                         {"id": "old-tag", "title": "Old"},
@@ -211,8 +211,8 @@ class StateStoreRegressionTests(unittest.TestCase):
                         "serverTimestamp": 2,
                         "transaction": [{"id": "tx-keep", "outcome": 2}],
                         "budget": [
-                            {"tag": None, "date": "2026-07-01", "outcome": 100},
-                            {"tag": "new-tag", "date": "2026-07-01", "outcome": 200},
+                            {"user": 1, "tag": None, "date": "2026-07-01", "outcome": 100},
+                            {"user": 1, "tag": "new-tag", "date": "2026-07-01", "outcome": 200},
                         ],
                         "tag": [{"id": "new-tag", "title": "New"}],
                         "deletion": [{"object": "account", "id": "account-delete"}],
@@ -226,7 +226,7 @@ class StateStoreRegressionTests(unittest.TestCase):
         self.assertEqual(saved["transaction"], [{"id": "tx-keep", "outcome": 2}])
         self.assertEqual(
             sorted(cache.CACHE.data["budget"]),
-            ["new-tag:2026-07-01", "null:2026-07-01"],
+            ["1:new-tag:2026-07-01", "1:null:2026-07-01"],
         )
         self.assertNotIn("old-tag", cache.CACHE.tags_by_id())
         self.assertIn("new-tag", cache.CACHE.tags_by_id())
@@ -268,6 +268,60 @@ class StateStoreRegressionTests(unittest.TestCase):
                 ))
 
         self.assertEqual(json.loads(result), {"category_id": "food"})
+
+    def test_analytics_selected_entities_are_revalidated_after_prefetch_sync(self):
+        entity_id = "11111111-1111-1111-1111-111111111111"
+        cases = {
+            "account": {
+                "store": "account",
+                "entity": {"id": entity_id, "title": "Account", "inBalance": True},
+                "arguments": {"account_scope": "selected", "account_ids": [entity_id]},
+            },
+            "category": {
+                "store": "tag",
+                "entity": {"id": entity_id, "title": "Category", "parent": None},
+                "arguments": {"category_scope": "selected", "category_ids": [entity_id]},
+            },
+            "merchant": {
+                "store": "merchant",
+                "entity": {"id": entity_id, "title": "Merchant"},
+                "arguments": {"merchant_scope": "selected", "merchant_ids": [entity_id]},
+            },
+        }
+
+        for entity_type, case in cases.items():
+            with self.subTest(entity_type=entity_type), tempfile.TemporaryDirectory() as temp_dir:
+                cache_path = Path(temp_dir) / ".cache.json"
+                cache_path.write_text(
+                    json.dumps({"serverTimestamp": 1, case["store"]: [case["entity"]]}),
+                    encoding="utf-8",
+                )
+                cache.CACHE = cache.Cache()
+
+                async def fake_sync():
+                    cache.CACHE.data[case["store"]] = {}
+                    return {}
+
+                arguments = {
+                    "start_date": "2026-07-01",
+                    "end_date": "2026-07-31",
+                    "report": "outcome",
+                    **case["arguments"],
+                }
+                with patch.object(config, "CACHE_PATH", cache_path), \
+                     patch.object(config, "_cfg_path", Path(temp_dir) / "config.json"), \
+                     patch.object(dispatch, "_sync", AsyncMock(side_effect=fake_sync)), \
+                     patch.object(dispatch, "_close_client", AsyncMock(return_value=None)):
+                    result = asyncio.run(dispatch.run_tool(
+                        "get_analytics",
+                        arguments,
+                        {"get_analytics": AsyncMock(return_value='{"status":"ok"}')},
+                        lambda: None,
+                    ))
+
+                parsed = json.loads(result)
+                self.assertEqual(parsed["code"], "ENTITY_NOT_FOUND")
+                self.assertEqual(parsed["details"]["entity_type"], entity_type)
 
     def test_dispatch_uses_supplied_account_meta_migration_callback(self):
         migrate = Mock()
@@ -312,14 +366,7 @@ class StateStoreRegressionTests(unittest.TestCase):
             config_path = Path(temp_dir) / "config.json"
             cache_path.write_text('{"serverTimestamp":', encoding="utf-8")
             config_path.write_text(
-                json.dumps({
-                    "budget_modes": {
-                        "income_vs_expense": {
-                            "label": "Income vs Expense",
-                            "description": "Mode description",
-                        }
-                    }
-                }),
+                json.dumps({"budget_modes": {"stale": {"count_all_movements": True}}}),
                 encoding="utf-8",
             )
 
@@ -338,9 +385,12 @@ class StateStoreRegressionTests(unittest.TestCase):
             saved = json.loads(config_path.read_text(encoding="utf-8"))
 
         self.assertTrue(parsed["success"])
-        self.assertEqual(parsed["label"], "Income vs Expense")
+        self.assertEqual(parsed["plan_balance_mode"], "EXCLUDE_OPENING_BALANCE")
+        self.assertIsNone(parsed["plan_settings"])
+        self.assertEqual(parsed["settings_source"], "unavailable_no_synced_user")
         self.assertEqual(saved["budget_mode"], "income_vs_expense")
-        self.assertTrue(saved["budget_mode_configured"])
+        self.assertNotIn("budget_mode_configured", saved)
+        self.assertNotIn("budget_modes", saved)
         mocked_sync.assert_not_awaited()
 
     def test_account_meta_migration_uses_config_state_store(self):
@@ -412,7 +462,7 @@ class StateStoreRegressionTests(unittest.TestCase):
         mocked_print.assert_called_once_with("[]")
 
     def test_cli_reads_cyrillic_call_payload_from_stdin(self):
-        payload = '{"tool":"suggest","arguments":{"payee":"Яндекс Еда"}}'
+        payload = '{"tool":"suggest","arguments":{"payee":"Тестовый магазин"}}'
         with patch.object(cli.config, "TOKEN", "token"), \
              patch.object(cli, "_run_tool", AsyncMock(return_value='{"status":"ok"}')) as run_tool, \
              patch.object(sys, "argv", ["cli.py", "--call", "-"]), \
@@ -420,10 +470,10 @@ class StateStoreRegressionTests(unittest.TestCase):
              patch("builtins.print"):
             cli.main()
 
-        run_tool.assert_awaited_once_with("suggest", {"payee": "Яндекс Еда"})
+        run_tool.assert_awaited_once_with("suggest", {"payee": "Тестовый магазин"})
 
     def test_cli_decodes_ascii_escaped_unicode_from_stdin(self):
-        payload = r'{"tool":"suggest","arguments":{"payee":"\u042f\u043d\u0434\u0435\u043a\u0441 \u0415\u0434\u0430"}}'
+        payload = r'{"tool":"suggest","arguments":{"payee":"\u0422\u0435\u0441\u0442\u043e\u0432\u044b\u0439 \u043c\u0430\u0433\u0430\u0437\u0438\u043d"}}'
         with patch.object(cli.config, "TOKEN", "token"), \
              patch.object(cli, "_run_tool", AsyncMock(return_value='{"status":"ok"}')) as run_tool, \
              patch.object(sys, "argv", ["cli.py", "--call", "-"]), \
@@ -431,7 +481,7 @@ class StateStoreRegressionTests(unittest.TestCase):
              patch("builtins.print"):
             cli.main()
 
-        run_tool.assert_awaited_once_with("suggest", {"payee": "Яндекс Еда"})
+        run_tool.assert_awaited_once_with("suggest", {"payee": "Тестовый магазин"})
 
     def test_cli_reports_corrupt_config_instead_of_missing_token(self):
         corrupt = config.CorruptStateError(Path("config.json"), "bad JSON")

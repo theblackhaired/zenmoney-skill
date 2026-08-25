@@ -50,8 +50,9 @@ User-maintained configuration, including:
 
 - `billing_period_start_day`
 - `budget_mode`
-- `budget_mode_configured`
-- `budget_modes`
+- `plan_user_id`
+- `plan_settings_override`
+- `difference_calculation_mode`
 - `round_balance_to_integer`
 - `accounts_meta`
 - optional fallback `token`
@@ -109,17 +110,17 @@ Practical invariants used by the current code:
 - `account.id` is a UUID-like string; `account.instrument` points to `instrument.id`
 - `transaction` stores both income and outcome sides, so transfers are represented as one entity with two accounts/instruments
 - `tag.parent` is nullable; category full paths are reconstructed from the cache, not from a separate references file
-- `budget` is keyed in-memory as `"{tag-or-null}:{date}"`
+- `budget` is keyed in-memory as `"{user}:{tag-or-null}:{date}"`; the user component is mandatory so family budgets cannot overwrite one another
 - `reminderMarker.reminder` points back to `reminder.id`
 
-Tool arguments expose aggregate budgets as `ALL`, `ALL (aggregate)`, or `00000000-0000-0000-0000-000000000000`. The runtime normalizes these to the zero UUID in validated arguments, uses that zero UUID in the current budget write payload, and confirms writes by the zero-UUID budget key. Raw server rows with `tag: null` still load under a `null:{date}` cache key.
+Tool arguments expose aggregate budgets as `ALL`, `ALL (aggregate)`, or `00000000-0000-0000-0000-000000000000`. The runtime normalizes these to the zero UUID in validated arguments, uses that zero UUID in the current budget write payload, and identifies the cached row by the selected user plus zero-UUID tag and date. Raw server rows with `tag: null` load under a distinct `{user}:null:{date}` cache key.
 
 ## Diff application assumptions
 
 Implemented in `scripts/zenmoney/cache.py`.
 
 - Non-budget entities are upserted by `id`
-- Budgets are upserted by `(tag, date)` rather than raw `id`
+- Budgets are upserted by `(user, tag, date)` rather than raw `id`
 - Deletions remove entities by `deletion[].object` plus `deletion[].id`
 - Tag updates invalidate derived category indexes
 - Force-fetch responses replace requested entity stores only when fetched from `serverTimestamp: 0`
@@ -147,6 +148,8 @@ Examples:
 - `check_auth_status` and `suggest` are `forced_live` because they make live API requests inside the handler
 
 This means most read and write tools use cached state plus a best-effort refresh, while auth checks and suggestions intentionally skip prefetch because they own the live call themselves.
+
+The advanced analytics handlers (`get_category_report`, `get_money_flow`, `get_income_outcome_comparison`, `get_balance_trend`) consume the refreshed cache after the normal prefetch. Category, comparison, and balance-series conversions fetch dated rates from `POST /instrument-rates/`; the synced current `Instrument.rate` is only the documented fallback. Balance history is reconstructed from current account balances by reversing synced transactions after each requested point, and the response exposes that provenance in metadata.
 
 `scripts/cli.py` enforces the token gate only for non-cache-only tools. `setup_budget_mode` can run without `ZENMONEY_TOKEN` or `config.json -> token`; live reads and writes cannot.
 

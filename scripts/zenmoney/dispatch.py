@@ -82,6 +82,11 @@ async def run_tool(
                 raise
         if sync_policy == SYNC_POLICY_PREFETCH_SYNC and not did_prefetch_sync:
             await _sync()
+            # Syntax validation intentionally happens before network access, but
+            # entity existence must be checked against the cache produced by
+            # the prefetch. Revalidate the original arguments so the internal
+            # validated marker cannot preserve stale cache-dependent results.
+            validated_args = validate_tool_args(name, args)
         return await handler(validated_args)
     except Exception as exc:
         return json.dumps(_error_payload(exc), ensure_ascii=False)

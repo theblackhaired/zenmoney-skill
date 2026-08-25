@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Breaking: replaced all read/report date shorthands with one strict period resolver; Plans now requires `period=billing_period`, Analytics/transactions require a named period or complete custom range, and weeks require `first_weekday`.
+- The resolver matches Android 26.6 rollover semantics for billing days 29-31 and calendar `Budget.date` anchors.
+- Removed user-specific financial examples and duplicated stale history from tracked skill documentation; local private profiles remain optional and ignored by Git.
+- Replaced `get_analytics` with an explicit breaking contract:
+  - `type=expense` -> `report=outcome`
+  - `type=income` -> `report=income`
+  - `type=net` -> `report=net`
+  - `type=all` and `turnover` are removed until a separate money-movement contract exists
+- Added required Analytics argument `report` and optional defaults `group_by=category`, `currency_mode=split`.
+- Documented strict Analytics filter slice for issue #20: account, category, and merchant scopes; selected-list validation; `ENTITY_NOT_FOUND`; filter echo; and rejection of unknown arguments and singular aliases.
+- Added fixed Analytics policies: `tag_policy=primary_tag`, `currency_conversion=none`, `transfers=excluded`, `unknown_currency=separate_bucket`.
+- Standardized Analytics output on `snake_case` and stable group key prefixes; `payee:` is only the merchant-grouping fallback key.
+
 ## 2026-07-24
 
 - Fixed false write failures when ZenMoney normalizes server-derived transaction fields such as `originalPayee` and operation amounts after accepting a write.
@@ -15,49 +30,6 @@
 - Clarified reminder recurrence: `points` are offsets where `0 <= point < step`; monthly/yearly marker days come from `start_date`.
 - Clarified aggregate budget category semantics for `ALL` / `ALL (aggregate)` / zero UUID.
 - Clarified that `setup_budget_mode` is cache-only and can run without a ZenMoney token.
-
-## [2026-02-21] — Budget balance calculation fix
-
-### Fixed — Critical balance calculation accuracy
-
-**Income vs Expense mode (FULLY WORKING, exact match):**
-- **analyze_budget_detailed**: Fixed expense calculation formula to apply `max(actual+planned, budget)` at leaf category level instead of root level
-  - Impact: Category "Продукты и питание" with budget=10k on "Продукты" and planned=50k on "Доставка еды" now correctly counts as 60k expenses (10k + 50k) instead of 51k (max(51k, 10k))
-  - This fix resolves 8,984 ₽ undercount in expense_expected, bringing balance from +7,244 ₽ to -1,739 ₽
-- **config.json**: Corrected income_vs_expense mode config — set `to_other_off_balance: false` to exclude transfers to non-structural off-balance accounts (e.g., HML.APP)
-  - ZenMoney "Доходы vs Расходы" mode only counts structured off-balance transfers: credit repayments, savings deposits, debt payments
-  - Generic off-balance accounts are excluded to prevent overcounting internal project funds transfers
-  - This fix resolves remaining 1,600 ₽ discrepancy, bringing balance from -1,739 ₽ to **exact ZenMoney match of -139 ₽** ✅
-- **classify_transfer**: Fixed count_all_movements bypass in lines 437/442 — removed `count_all or` condition from generic off-balance checks
-  - Prevents inBalance-to-inBalance transfers from being misclassified as expenses in balance_vs_expense mode
-  - Lines 437, 442: Changed `if count_all or (from_in_balance and not to_in_balance)` to `if from_in_balance and not to_in_balance`
-
-**Balance vs Expense mode (PARTIALLY IMPLEMENTED, ⚠️ NOT PRODUCTION-READY):**
-- **classify_transfer**: Added early-return guard for inBalance-to-inBalance transfers at line 398
-  - `if from_in_balance and to_in_balance: return None` — transfers within balance perimeter are balance-neutral
-  - Prevents double-classification of internal transfers (checking → credit card) when both accounts are inBalance
-- **calculate_initial_balance**: Implemented automatic calculation of "Входящий баланс" (lines 1163-1235)
-  - Formula: `balance_at_start = current_balance - sum(transactions_after_start)`
-  - Handles multi-currency conversion using instrument rates
-  - Uses `time.mktime()` for Windows-compatible timestamp conversion
-- **Conditional balance formula** (lines 1847-1865):
-  - balance_vs_expense: `balance = initial_balance + income_actual + transfers_in - expense_actual - transfers_out`
-  - income_vs_expense: `balance = (income_actual + income_planned) - expense_expected - transfers_net` (unchanged)
-- **⚠️ Known Issues**:
-  - Shows balance **+85,611 ₽** instead of ZenMoney's **+76 ₽** (~85k discrepancy)
-  - Root cause: `expense_actual` = 1,020 ₽ (only completed transactions), but ZenMoney likely includes planned expenses
-  - Data structure analysis shows minimal actual expenses vs 144k expected
-  - **Status**: Formula implemented correctly, but data interpretation differs from ZenMoney
-  - **Recommendation**: Use income_vs_expense mode for production (exact match with ZenMoney)
-
-### Changed
-- Added `sum_leaf_expected()` helper function in `scripts/cli.py:1693-1703` for recursive leaf-level max() calculation
-- Added `calculate_initial_balance()` function in `scripts/cli.py:1163-1235` for automatic initial balance calculation
-- Added `sum_actual_recursive()` helper in `scripts/cli.py:1805-1815` for recursive actual expense summation
-- Added conditional balance calculation logic based on `count_all_movements` flag (lines 1847-1865)
-- Added debug output for balance_vs_expense mode (lines 1867-1877) with formula breakdown
-- **Production-ready**: Income vs Expense mode budget analysis now matches ZenMoney exactly ✅
-- **Experimental**: Balance vs Expense mode implemented but has data interpretation issues ⚠️
 
 ## [2026-02-20] — Reference cache + Marker-based filtering
 
@@ -81,15 +53,15 @@
 
 ### Added
 - `get_reminders`: new params `marker_from`, `marker_to` — filter reminders by marker dates in a given period
-- `get_reminders`: new param `category` — filter by category name (e.g. "Иностранные сервисы")
+- `get_reminders`: new param `category` — filter by category name
 - `get_reminders`: new param `type` — filter by operation type (`expense` / `income` / `transfer` / `all`)
 - `get_reminders`: response now includes `type` field for each reminder
 - `get_reminders`: marker mode response includes `markers_total_outcome` and `markers_total_income` per reminder
 - Helper function `_reminder_type()` — determines reminder type using same logic as `_tx_type()`
 
 ### Fixed
-- Old behavior sorted by `startDate` desc with limit, causing old recurring reminders (Spotify, ChatGPT Plus, Google One, etc.) to fall outside the first page — effectively invisible via API
-- GrowFood with 5 markers/period was shown as 10k instead of 50k due to counting reminder outcome instead of sum of marker outcomes
+- Old behavior sorted by `startDate` desc with limit, causing older recurring reminders to fall outside the first page.
+- Marker totals now sum marker amounts instead of reusing the reminder template amount.
 
 ### Unchanged
-- Legacy mode (without `marker_from`/`marker_to`) preserved for backward compatibility
+- recent-summary mode (without `marker_from`/`marker_to`) remains available for recent reminders

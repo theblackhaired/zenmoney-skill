@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import datetime
 import math
-import re
 import secrets
+import unicodedata
 from typing import Any
 
 from . import cache as _cache
 from . import config
+from . import periods
 from .domain import (
     ALL_CATEGORIES_ID,
-    _BUDGET_MODE_DEFAULTS,
     _find_category_id,
     _g,
     _get_bool_arg,
@@ -31,19 +31,85 @@ from .errors import (
     InvalidMonthError,
     InvalidUUIDError,
     ToolError,
+    UnsupportedCalculationError,
     UnsupportedCategoryFilterError,
 )
+from .transfer_classifier import PUBLIC_MODE_TO_ZM
 
 
 _VALIDATED_TOOL_KEY = "__validated_for_tool__"
 _VALIDATED_TOOL_TOKEN = secrets.token_hex(8)
 _VALIDATED_TOOL_VALUE_PREFIX = f"internal:{_VALIDATED_TOOL_TOKEN}:"
-_RELATIVE_DAY_RE = re.compile(r"^[+-]?\d+d$")
 _TRANSACTION_TYPES = {"expense", "income", "transfer"}
 _TRANSACTION_FILTER_TYPES = _TRANSACTION_TYPES
 _REMINDER_FILTER_TYPES = _TRANSACTION_TYPES | {"all"}
-_ANALYTICS_TYPES = {"expense", "income", "all"}
+_ANALYTICS_REPORTS = {"income", "outcome", "net"}
 _ANALYTICS_GROUP_BY = {"category", "account", "merchant"}
+_ANALYTICS_CURRENCY_MODES = {"split", "scalar"}
+_ANALYTICS_ACCOUNT_SCOPES = {"all", "in_balance", "selected"}
+_ANALYTICS_CATEGORY_SCOPES = {"all", "selected"}
+_ANALYTICS_CATEGORY_ROLES = {"primary", "additional", "any"}
+_ANALYTICS_MERCHANT_SCOPES = {"all", "selected"}
+_ADVANCED_ANALYTICS_TOOLS = {
+    "get_category_report",
+    "get_money_flow",
+    "get_income_outcome_comparison",
+    "get_balance_trend",
+}
+_PERIOD_ARGUMENTS = {
+    "period",
+    "period_offset",
+    "first_weekday",
+    "start_date",
+    "end_date",
+}
+_TRANSACTION_ARGUMENTS = _PERIOD_ARGUMENTS | {
+    "account_id",
+    "category_id",
+    "type",
+    "limit",
+    "offset",
+}
+_ANALYTICS_ARGUMENTS = _PERIOD_ARGUMENTS | {
+    "report",
+    "group_by",
+    "currency_mode",
+    "account_scope",
+    "account_ids",
+    "category_scope",
+    "category_ids",
+    "category_role",
+    "merchant_scope",
+    "merchant_ids",
+    "payees",
+}
+_ADVANCED_ANALYTICS_ACCOUNT_ARGUMENTS = _PERIOD_ARGUMENTS | {
+    "account_scope",
+    "account_ids",
+}
+_CATEGORY_REPORT_ARGUMENTS = _ADVANCED_ANALYTICS_ACCOUNT_ARGUMENTS | {
+    "direction",
+    "group_by",
+    "budget_method",
+    "comparison_periods",
+    "difference_calculation_mode",
+}
+_COMPARISON_ARGUMENTS = _ADVANCED_ANALYTICS_ACCOUNT_ARGUMENTS | {
+    "mode",
+    "comparison_periods",
+}
+_BALANCE_TREND_ARGUMENTS = _ADVANCED_ANALYTICS_ACCOUNT_ARGUMENTS | {
+    "currency_filter",
+    "currency",
+}
+_PLANS_ARGUMENTS = {
+    "period",
+    "period_offset",
+    "budget_mode",
+    "show_forecast",
+    "show_calendar",
+    "difference_calculation_mode",
+}
 _ACCOUNT_TYPES = {"cash", "ccard", "checking"}
 _REMINDER_INTERVALS = {"day", "week", "month", "year"}
 
@@ -171,6 +237,40 @@ def get_optional_uuid_list_arg(args: dict, key: str, *, item_label: str | None =
     return values
 
 
+def get_analytics_selector_ids(args: dict, key: str) -> list[str]:
+    if key not in args:
+        return []
+    values = args[key]
+    if not isinstance(values, list):
+        raise InvalidArgumentError(f"{key} must be a list of UUID strings")
+    normalized: list[str] = []
+    for i, value in enumerate(values):
+        field = f"{key}[{i}]"
+        if not isinstance(value, str):
+            raise InvalidUUIDError(f"{field} must be a UUID string")
+        value = _ensure_not_empty_string(value, field, error_cls=InvalidUUIDError)
+        try:
+            _validate_uuid(value, field)
+        except ValueError as exc:
+            raise InvalidUUIDError(str(exc)) from exc
+        normalized.append(value)
+    return sorted(set(normalized))
+
+
+def get_analytics_payees(args: dict) -> list[str]:
+    if "payees" not in args:
+        return []
+    values = args["payees"]
+    if not isinstance(values, list):
+        raise InvalidArgumentError("payees must be a list of non-empty strings")
+    normalized: list[str] = []
+    for i, value in enumerate(values):
+        if not isinstance(value, str) or not value.strip():
+            raise InvalidArgumentError(f"payees[{i}] must be a non-empty string")
+        normalized.append(unicodedata.normalize("NFC", value))
+    return sorted(set(normalized))
+
+
 def get_optional_date_arg(args: dict, key: str) -> str | None:
     value = _g(key, args)
     if value is None:
@@ -197,68 +297,47 @@ def get_date_arg_or_today(args: dict, key: str = "date") -> str:
     return _today()
 
 
-def _month_end(value: datetime.date) -> datetime.date:
-    next_month = (value.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
-    return next_month - datetime.timedelta(days=1)
-
-
-def _current_billing_period() -> tuple[str, str]:
+def _billing_start_day() -> int:
     cfg = config._load_config()
-    start_day_raw = cfg.get("billing_period_start_day", 1)
+    if "billing_period_start_day" not in cfg:
+        raise InvalidArgumentError(
+            "billing_period_start_day is required in config.json for period=billing_period"
+        )
+    raw = cfg["billing_period_start_day"]
+    if type(raw) is not int or not 1 <= raw <= 31:
+        raise InvalidArgumentError("billing_period_start_day must be an integer from 1 to 31")
+    return raw
+
+
+def normalize_strict_period(args: dict) -> dict:
+    request = {
+        key: args[key]
+        for key in ("period", "period_offset", "start_date", "end_date")
+        if key in args
+    }
+    first_weekday = args.get("first_weekday")
+    if "first_weekday" in args and args.get("period") != "week":
+        raise InvalidArgumentError("first_weekday is valid only when period=week")
+    if args.get("period") == "week" and first_weekday is None:
+        raise InvalidArgumentError("first_weekday is required when period=week")
+    billing_start_day = _billing_start_day() if request.get("period") == "billing_period" else 1
     try:
-        start_day = int(start_day_raw)
-    except (TypeError, ValueError):
-        start_day = 1
-    start_day = max(1, min(start_day, 28))
-
-    today = datetime.date.fromisoformat(_today())
-    if today.day >= start_day:
-        period_start = datetime.date(today.year, today.month, start_day)
-        next_month = (today.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
-        period_end = datetime.date(next_month.year, next_month.month, start_day) - datetime.timedelta(days=1)
-    else:
-        prev_month = today.replace(day=1) - datetime.timedelta(days=1)
-        period_start = datetime.date(prev_month.year, prev_month.month, start_day)
-        period_end = datetime.date(today.year, today.month, start_day) - datetime.timedelta(days=1)
-    return period_start.isoformat(), period_end.isoformat()
-
-
-def resolve_period_date_arg(value: Any, key: str, *, role: str) -> str:
-    value = _ensure_not_empty_string(value, key, error_cls=InvalidDateError)
-    if not isinstance(value, str):
-        raise InvalidDateError(f"{key} must be a string date")
-
-    today = datetime.date.fromisoformat(_today())
-    if value == "today":
-        return today.isoformat()
-    if _RELATIVE_DAY_RE.fullmatch(value):
-        return (today + datetime.timedelta(days=int(value[:-1]))).isoformat()
-    if value == "this_month":
-        if role == "start":
-            return today.replace(day=1).isoformat()
-        return _month_end(today).isoformat()
-    if value == "billing_period":
-        period_start, period_end = _current_billing_period()
-        return period_start if role == "start" else period_end
-    try:
-        _validate_date(value, key)
-        datetime.date.fromisoformat(value)
-    except ValueError as exc:
-        raise InvalidDateError(str(exc)) from exc
-    return value
-
-
-def normalize_period_range(args: dict, start_key: str = "start_date", end_key: str = "end_date") -> tuple[str, str | None]:
-    start_raw = args[start_key]
-    start = resolve_period_date_arg(start_raw, start_key, role="start")
-    end: str | None = None
-    if end_key in args:
-        end = resolve_period_date_arg(args[end_key], end_key, role="end")
-    elif start_raw in {"this_month", "billing_period"}:
-        end = resolve_period_date_arg(start_raw, end_key, role="end")
-    if end is not None and start > end:
-        raise InvalidDateRangeError(f"{start_key} must be on or before {end_key}")
-    return start, end
+        return periods.resolve_period(
+            request,
+            today=_today(),
+            billing_start_day=billing_start_day,
+            first_weekday=first_weekday,
+        )
+    except periods.InvalidPeriodSelectorError as exc:
+        raise InvalidArgumentError(str(exc)) from exc
+    except periods.InvalidPeriodValueError as exc:
+        if "on or before" in str(exc):
+            raise InvalidDateRangeError(str(exc)) from exc
+        if "must be an ISO date" in str(exc):
+            raise InvalidDateError(str(exc)) from exc
+        raise InvalidArgumentError(str(exc)) from exc
+    except (OverflowError, ValueError) as exc:
+        raise InvalidArgumentError(f"period is outside the supported date range: {exc}") from exc
 
 
 def _coerce_finite_float(value: Any, key: str) -> float | None:
@@ -398,9 +477,19 @@ def validate_tool_args(name: str, args: dict) -> dict:
     elif name == "get_budgets":
         normalized["month"] = get_month_arg(normalized)
     elif name == "get_transactions":
-        normalized["start_date"], normalized_end_date = normalize_period_range(normalized)
-        if normalized_end_date is not None:
-            normalized["end_date"] = normalized_end_date
+        unknown_arguments = sorted(set(normalized) - _TRANSACTION_ARGUMENTS)
+        if unknown_arguments:
+            raise InvalidArgumentError(
+                f"Unknown get_transactions arguments: {', '.join(unknown_arguments)}",
+                {
+                    "unknown_arguments": unknown_arguments,
+                    "accepted_arguments": sorted(_TRANSACTION_ARGUMENTS),
+                },
+            )
+        resolved_period = normalize_strict_period(normalized)
+        normalized["start_date"] = resolved_period["start_date"]
+        normalized["end_date"] = resolved_period["end_date"]
+        normalized["resolved_period"] = resolved_period
         normalized["account_id"] = get_optional_uuid_arg(normalized, "account_id")
         normalized["category_id"] = get_optional_uuid_arg(normalized, "category_id")
         normalized["type"] = get_enum_arg(normalized, "type", _TRANSACTION_FILTER_TYPES)
@@ -426,15 +515,269 @@ def validate_tool_args(name: str, args: dict) -> dict:
                 raise UnsupportedCategoryFilterError("Category filter 'ALL' is not supported by get_reminders")
             normalized["category_id"] = category_id
     elif name == "get_analytics":
-        normalized["start_date"], normalized_end_date = normalize_period_range(normalized)
-        if normalized_end_date is not None:
-            normalized["end_date"] = normalized_end_date
-        normalized["type"] = get_enum_arg(normalized, "type", _ANALYTICS_TYPES, default="expense")
+        for removed_argument in ("type", "metric", "scalar_total"):
+            if removed_argument not in normalized:
+                continue
+            removed_value = normalized[removed_argument]
+            if removed_argument == "type":
+                accepted_values = {
+                    "expense": "outcome",
+                    "income": "income",
+                    "net": "net",
+                    "all": None,
+                }
+                mapped_report = accepted_values.get(removed_value)
+                migration = f" use report={mapped_report}" if mapped_report else " no direct replacement is available"
+                replacement = "report"
+            elif removed_argument == "metric":
+                accepted_values = sorted(_ANALYTICS_REPORTS)
+                migration = f" use report={removed_value}" if removed_value in _ANALYTICS_REPORTS else " use report"
+                replacement = "report"
+            else:
+                accepted_values = {False: "split", True: "scalar"}
+                mapped_mode = "scalar" if removed_value else "split"
+                migration = f" use currency_mode={mapped_mode}"
+                replacement = "currency_mode"
+            raise InvalidArgumentError(
+                f"Removed argument '{removed_argument}' is not supported;{migration}",
+                {
+                    "removed_argument": removed_argument,
+                    "replacement": replacement,
+                    "accepted_values": accepted_values,
+                },
+            )
+        removed_filter_aliases = {
+            "account_id": "account_scope=selected with account_ids",
+            "category_id": "category_scope=selected with category_ids",
+            "merchant_id": "merchant_scope=selected with merchant_ids",
+            "payee": "merchant_scope=selected with payees",
+        }
+        for removed_argument, replacement in removed_filter_aliases.items():
+            if removed_argument in normalized:
+                raise InvalidArgumentError(
+                    f"Removed argument '{removed_argument}' is not supported; use {replacement}",
+                    {"removed_argument": removed_argument, "replacement": replacement},
+                )
+        unknown_arguments = sorted(set(normalized) - _ANALYTICS_ARGUMENTS)
+        if unknown_arguments:
+            raise InvalidArgumentError(
+                f"Unknown get_analytics arguments: {', '.join(unknown_arguments)}",
+                {
+                    "unknown_arguments": unknown_arguments,
+                    "accepted_arguments": sorted(_ANALYTICS_ARGUMENTS),
+                },
+            )
+        resolved_period = normalize_strict_period(normalized)
+        normalized["start_date"] = resolved_period["start_date"]
+        normalized["end_date"] = resolved_period["end_date"]
+        normalized["resolved_period"] = resolved_period
+        report = normalized.get("report")
+        if report == "turnover":
+            raise UnsupportedCalculationError(
+                "report=turnover is reserved until the money-movement contract is implemented",
+                {"report": report, "supported_reports": sorted(_ANALYTICS_REPORTS)},
+            )
+        if report is None:
+            raise InvalidArgumentError(
+                "report is required; accepted values: income, outcome, net",
+                {"accepted_values": sorted(_ANALYTICS_REPORTS)},
+            )
+        normalized["report"] = get_enum_arg(normalized, "report", _ANALYTICS_REPORTS)
         normalized["group_by"] = get_enum_arg(normalized, "group_by", _ANALYTICS_GROUP_BY, default="category")
+        normalized["currency_mode"] = get_enum_arg(
+            normalized,
+            "currency_mode",
+            _ANALYTICS_CURRENCY_MODES,
+            default="split",
+        )
+
+        normalized["account_scope"] = get_enum_arg(
+            normalized,
+            "account_scope",
+            _ANALYTICS_ACCOUNT_SCOPES,
+            default="in_balance",
+        )
+        account_ids_present = "account_ids" in normalized
+        normalized["account_ids"] = get_analytics_selector_ids(normalized, "account_ids")
+        if normalized["account_scope"] == "selected":
+            if not normalized["account_ids"]:
+                raise InvalidArgumentError("account_ids must be non-empty when account_scope=selected")
+            unknown_ids = [
+                account_id
+                for account_id in normalized["account_ids"]
+                if not _cache.CACHE.get_account(account_id)
+            ]
+            if unknown_ids:
+                raise EntityNotFoundError(
+                    "Selected analytics accounts were not found",
+                    {"entity_type": "account", "ids": unknown_ids},
+                )
+        elif account_ids_present:
+            raise InvalidArgumentError("account_ids is valid only when account_scope=selected")
+
+        normalized["category_scope"] = get_enum_arg(
+            normalized,
+            "category_scope",
+            _ANALYTICS_CATEGORY_SCOPES,
+            default="all",
+        )
+        category_role_present = "category_role" in normalized
+        normalized["category_role"] = get_enum_arg(
+            normalized,
+            "category_role",
+            _ANALYTICS_CATEGORY_ROLES,
+            default="any",
+        )
+        category_ids_present = "category_ids" in normalized
+        normalized["category_ids"] = get_analytics_selector_ids(normalized, "category_ids")
+        if normalized["category_scope"] == "selected":
+            if not normalized["category_ids"]:
+                raise InvalidArgumentError("category_ids must be non-empty when category_scope=selected")
+            unknown_ids = [
+                category_id
+                for category_id in normalized["category_ids"]
+                if not _cache.CACHE.get_tag(category_id)
+            ]
+            if unknown_ids:
+                raise EntityNotFoundError(
+                    "Selected analytics categories were not found",
+                    {"entity_type": "category", "ids": unknown_ids},
+                )
+        elif category_ids_present:
+            raise InvalidArgumentError("category_ids is valid only when category_scope=selected")
+        elif category_role_present:
+            raise InvalidArgumentError("category_role is valid only when category_scope=selected")
+
+        normalized["merchant_scope"] = get_enum_arg(
+            normalized,
+            "merchant_scope",
+            _ANALYTICS_MERCHANT_SCOPES,
+            default="all",
+        )
+        merchant_ids_present = "merchant_ids" in normalized
+        payees_present = "payees" in normalized
+        normalized["merchant_ids"] = get_analytics_selector_ids(normalized, "merchant_ids")
+        normalized["payees"] = get_analytics_payees(normalized)
+        if normalized["merchant_scope"] == "selected":
+            if not normalized["merchant_ids"] and not normalized["payees"]:
+                raise InvalidArgumentError(
+                    "merchant_ids or payees must be non-empty when merchant_scope=selected"
+                )
+            unknown_ids = [
+                merchant_id
+                for merchant_id in normalized["merchant_ids"]
+                if not _cache.CACHE.get_merchant(merchant_id)
+            ]
+            if unknown_ids:
+                raise EntityNotFoundError(
+                    "Selected analytics merchants were not found",
+                    {"entity_type": "merchant", "ids": unknown_ids},
+                )
+        elif merchant_ids_present or payees_present:
+            raise InvalidArgumentError(
+                "merchant_ids and payees are valid only when merchant_scope=selected"
+            )
+    elif name in _ADVANCED_ANALYTICS_TOOLS:
+        accepted_arguments = {
+            "get_category_report": _CATEGORY_REPORT_ARGUMENTS,
+            "get_money_flow": _ADVANCED_ANALYTICS_ACCOUNT_ARGUMENTS,
+            "get_income_outcome_comparison": _COMPARISON_ARGUMENTS,
+            "get_balance_trend": _BALANCE_TREND_ARGUMENTS,
+        }[name]
+        unknown_arguments = sorted(set(normalized) - accepted_arguments)
+        if unknown_arguments:
+            raise InvalidArgumentError(
+                f"Unknown {name} arguments: {', '.join(unknown_arguments)}",
+                {
+                    "unknown_arguments": unknown_arguments,
+                    "accepted_arguments": sorted(accepted_arguments),
+                },
+            )
+        resolved_period = normalize_strict_period(normalized)
+        normalized["start_date"] = resolved_period["start_date"]
+        normalized["end_date"] = resolved_period["end_date"]
+        normalized["resolved_period"] = resolved_period
+        normalized["account_scope"] = get_enum_arg(
+            normalized,
+            "account_scope",
+            _ANALYTICS_ACCOUNT_SCOPES,
+            default="in_balance",
+        )
+        account_ids_present = "account_ids" in normalized
+        normalized["account_ids"] = get_analytics_selector_ids(normalized, "account_ids")
+        if normalized["account_scope"] == "selected":
+            if not normalized["account_ids"]:
+                raise InvalidArgumentError("account_ids must be non-empty when account_scope=selected")
+            unknown_ids = [
+                account_id
+                for account_id in normalized["account_ids"]
+                if not _cache.CACHE.get_account(account_id)
+            ]
+            if unknown_ids:
+                raise EntityNotFoundError(
+                    "Selected analytics accounts were not found",
+                    {"entity_type": "account", "ids": unknown_ids},
+                )
+        elif account_ids_present:
+            raise InvalidArgumentError("account_ids is valid only when account_scope=selected")
+
+        if name == "get_category_report":
+            normalized["direction"] = get_enum_arg(
+                normalized, "direction", {"INCOME", "OUTCOME"}, default="OUTCOME"
+            )
+            normalized["group_by"] = get_enum_arg(
+                normalized, "group_by", {"TAG", "PAYEE"}, default="TAG"
+            )
+            normalized["budget_method"] = get_enum_arg(
+                normalized, "budget_method", {"BUDGET", "MEAN"}, default="BUDGET"
+            )
+            normalized["difference_calculation_mode"] = get_enum_arg(
+                normalized,
+                "difference_calculation_mode",
+                {"REFUNDS", "INCOME_OUTCOME_AND_REFUNDS", "NONE"},
+            )
+            normalized["comparison_periods"] = get_non_negative_int_arg(
+                normalized, "comparison_periods", 3
+            )
+        elif name == "get_income_outcome_comparison":
+            normalized["mode"] = get_enum_arg(
+                normalized,
+                "mode",
+                {"WHOLE_PERIOD", "AVERAGE_VALUES"},
+                default="WHOLE_PERIOD",
+            )
+            normalized["comparison_periods"] = get_non_negative_int_arg(
+                normalized, "comparison_periods", 3
+            )
+        elif name == "get_balance_trend":
+            normalized["currency_filter"] = get_enum_arg(
+                normalized,
+                "currency_filter",
+                {"USER", "POPULAR"},
+                default="USER",
+            )
+            currency = normalized.get("currency")
+            if isinstance(currency, bool) or (
+                currency is not None and not isinstance(currency, (str, int))
+            ):
+                raise InvalidArgumentError("currency must be an instrument id or code")
+            if isinstance(currency, str) and not currency.strip():
+                raise InvalidArgumentError("currency must not be empty")
+            normalized["currency"] = currency
+
+        if normalized.get("comparison_periods", 0) > 12:
+            raise InvalidArgumentError("comparison_periods must not exceed 12")
     elif name == "get_merchants":
         normalized["limit"] = get_non_negative_int_arg(normalized, "limit", 50)
         normalized["offset"] = get_non_negative_int_arg(normalized, "offset", 0)
     elif name == "setup_budget_mode":
+        unknown_arguments = sorted(
+            set(normalized) - {"mode", "difference_calculation_mode"}
+        )
+        if unknown_arguments:
+            raise InvalidArgumentError(
+                f"Unknown setup_budget_mode arguments: {', '.join(unknown_arguments)}"
+            )
         mode = _g("mode", normalized)
         if not mode:
             raise InvalidArgumentError("Parameter 'mode' is required")
@@ -443,19 +786,40 @@ def validate_tool_args(name: str, args: dict) -> dict:
                 f"Invalid mode: {mode}. Must be 'balance_vs_expense' or 'income_vs_expense'"
             )
         normalized["mode"] = mode
+        normalized["difference_calculation_mode"] = get_enum_arg(
+            normalized,
+            "difference_calculation_mode",
+            {"REFUNDS", "INCOME_OUTCOME_AND_REFUNDS", "NONE"},
+        )
     elif name == "analyze_budget_detailed":
+        unknown_arguments = sorted(set(normalized) - _PLANS_ARGUMENTS)
+        if unknown_arguments:
+            raise InvalidArgumentError(
+                f"Unknown analyze_budget_detailed arguments: {', '.join(unknown_arguments)}",
+                {
+                    "unknown_arguments": unknown_arguments,
+                    "accepted_arguments": sorted(_PLANS_ARGUMENTS),
+                },
+            )
         normalized["show_forecast"] = get_bool_arg(normalized, "show_forecast", True)
         normalized["show_calendar"] = get_bool_arg(normalized, "show_calendar", True)
+        if normalized.get("period") != "billing_period":
+            raise InvalidArgumentError("analyze_budget_detailed requires period=billing_period")
         if "budget_mode" in normalized:
             mode = normalized["budget_mode"]
-            if mode not in _BUDGET_MODE_DEFAULTS:
+            if mode not in PUBLIC_MODE_TO_ZM:
                 raise InvalidArgumentError(
-                    f"Unknown budget_mode: {mode}. Available: {sorted(_BUDGET_MODE_DEFAULTS)}"
+                    f"Unknown budget_mode: {mode}. Available: {sorted(PUBLIC_MODE_TO_ZM)}"
                 )
-        if "start_date" in normalized:
-            normalized["start_date"], normalized_end_date = normalize_period_range(normalized)
-            if normalized_end_date is not None:
-                normalized["end_date"] = normalized_end_date
+        normalized["difference_calculation_mode"] = get_enum_arg(
+            normalized,
+            "difference_calculation_mode",
+            {"REFUNDS", "INCOME_OUTCOME_AND_REFUNDS", "NONE"},
+        )
+        resolved_period = normalize_strict_period(normalized)
+        normalized["start_date"] = resolved_period["start_date"]
+        normalized["end_date"] = resolved_period["end_date"]
+        normalized["resolved_period"] = resolved_period
     elif name == "suggest":
         payee = _g("payee", normalized)
         if not payee:

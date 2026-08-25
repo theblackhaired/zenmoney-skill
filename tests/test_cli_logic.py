@@ -102,53 +102,6 @@ class CacheTagIndexTests(unittest.TestCase):
         self.assertIn("food-out", fourth)
 
 
-class InitialBalanceCalculationTests(unittest.TestCase):
-    def test_initial_balance_accepts_transactions_stored_as_dict_by_id(self):
-        data = {
-            "account": [
-                {
-                    "id": "acct-1",
-                    "balance": 1000,
-                    "instrument": "RUB",
-                    "inBalance": True,
-                    "archive": False,
-                }
-            ],
-            "instrument": [],
-            "transaction": {
-                "tx-income-after-start": {
-                    "id": "tx-income-after-start",
-                    "date": "2026-04-10",
-                    "incomeAccount": "acct-1",
-                    "income": 200,
-                    "outcomeAccount": "other",
-                    "outcome": 0,
-                },
-                "tx-outcome-after-start": {
-                    "id": "tx-outcome-after-start",
-                    "date": "2026-04-12",
-                    "incomeAccount": "other",
-                    "income": 0,
-                    "outcomeAccount": "acct-1",
-                    "outcome": 50,
-                },
-                "tx-before-start": {
-                    "id": "tx-before-start",
-                    "date": "2026-03-30",
-                    "incomeAccount": "acct-1",
-                    "income": 999,
-                    "outcomeAccount": "other",
-                    "outcome": 0,
-                },
-            },
-        }
-
-        self.assertEqual(
-            domain._calculate_initial_balance_impl(data, "2026-04-01"),
-            850,
-        )
-
-
 class ToolErrorTests(unittest.TestCase):
     def test_tool_error_str_returns_message(self):
         exc = validation.ToolError("CODE", "boom")
@@ -306,6 +259,7 @@ class BooleanValidationTests(unittest.TestCase):
             validation.get_date_arg_or_today({"date": ""}, "date")
 
     def test_create_budget_all_alias_uses_aggregate_tag(self):
+        cache.CACHE.data["user"] = {"123": {"id": 123}}
         cache.CACHE.data["account"] = {
             "acc-1": {"id": "acc-1", "user": 123, "instrument": 1, "title": "Card"},
         }
@@ -481,8 +435,10 @@ class DispatchValidationErrorTests(unittest.TestCase):
         mock_close = AsyncMock(return_value=None)
         with patch.object(dispatch, "_sync", mock_sync), \
              patch.object(dispatch, "_close_client", mock_close), \
-             patch.object(tools, "_migrate_account_meta", lambda: None):
+             patch.object(tools, "_migrate_account_meta", lambda: None), \
+             patch.object(config, "_load_config", return_value={"billing_period_start_day": 1}):
             result = asyncio.run(tools._run_tool("analyze_budget_detailed", {
+                "period": "billing_period",
                 "budget_mode": "garbage",
             }))
 
@@ -493,15 +449,19 @@ class DispatchValidationErrorTests(unittest.TestCase):
 
 
 class PeriodShorthandValidationTests(unittest.TestCase):
-    def test_get_transactions_resolves_relative_start_date(self):
+    def test_get_transactions_uses_shared_named_period(self):
         with patch.object(validation, "_today", return_value="2026-04-26"):
-            normalized = validation.validate_tool_args("get_transactions", {"start_date": "-30d"})
+            normalized = validation.validate_tool_args("get_transactions", {"period": "month"})
 
-        self.assertEqual(normalized["start_date"], "2026-03-27")
+        self.assertEqual(normalized["start_date"], "2026-04-01")
+        self.assertEqual(normalized["end_date"], "2026-04-30")
 
-    def test_get_analytics_this_month_expands_to_full_month(self):
+    def test_get_analytics_month_period_expands_to_full_month(self):
         with patch.object(validation, "_today", return_value="2026-04-26"):
-            normalized = validation.validate_tool_args("get_analytics", {"start_date": "this_month"})
+            normalized = validation.validate_tool_args("get_analytics", {
+                "period": "month",
+                "report": "outcome",
+            })
 
         self.assertEqual(normalized["start_date"], "2026-04-01")
         self.assertEqual(normalized["end_date"], "2026-04-30")
@@ -511,11 +471,57 @@ class PeriodShorthandValidationTests(unittest.TestCase):
              patch.object(config, "_load_config", return_value={"billing_period_start_day": 20}):
             normalized = validation.validate_tool_args(
                 "analyze_budget_detailed",
-                {"start_date": "billing_period"},
+                {"period": "billing_period"},
             )
 
         self.assertEqual(normalized["start_date"], "2026-04-20")
         self.assertEqual(normalized["end_date"], "2026-05-19")
+
+    def test_plans_and_analytics_share_billing_period_resolution(self):
+        with patch.object(validation, "_today", return_value="2026-03-01"), \
+             patch.object(config, "_load_config", return_value={"billing_period_start_day": 31}):
+            plans = validation.validate_tool_args(
+                "analyze_budget_detailed",
+                {"period": "billing_period"},
+            )
+            analytics = validation.validate_tool_args(
+                "get_analytics",
+                {"period": "billing_period", "report": "outcome"},
+            )
+
+        self.assertEqual(plans["start_date"], "2026-03-01")
+        self.assertEqual(plans["end_date"], "2026-03-30")
+        self.assertEqual(plans["resolved_period"], analytics["resolved_period"])
+        self.assertEqual(plans["resolved_period"]["budget_month_anchor"], "2026-02-01")
+
+    def test_analytics_rejects_removed_period_shorthand(self):
+        with self.assertRaisesRegex(ValueError, "start_date and end_date"):
+            validation.validate_tool_args(
+                "get_analytics",
+                {"start_date": "this_month", "report": "outcome"},
+            )
+
+    def test_transactions_reject_removed_relative_date_shorthand(self):
+        with self.assertRaisesRegex(ValueError, "ISO date"):
+            validation.validate_tool_args(
+                "get_transactions",
+                {"start_date": "-30d", "end_date": "today"},
+            )
+
+    def test_week_requires_explicit_first_weekday(self):
+        with self.assertRaisesRegex(ValueError, "first_weekday is required"):
+            validation.validate_tool_args(
+                "get_analytics",
+                {"period": "week", "report": "outcome"},
+            )
+
+    def test_billing_period_requires_configured_start_day(self):
+        with patch.object(config, "_load_config", return_value={}):
+            with self.assertRaisesRegex(ValueError, "billing_period_start_day is required"):
+                validation.validate_tool_args(
+                    "get_analytics",
+                    {"period": "billing_period", "report": "outcome"},
+                )
 
 
 class UpdateReminderRecurrenceTests(unittest.TestCase):
@@ -835,8 +841,8 @@ class CreateReminderMarkerTests(unittest.TestCase):
                 "account_id": self.ACCOUNT_ID,
                 "category_ids": [self.TAG_ID],
                 "date": "2026-07-01",
-                "payee": "ISS",
-                "comment": "Отпускные",
+                "payee": "Employer A",
+                "comment": "Synthetic income",
                 "notify": False,
             })))
 
@@ -875,15 +881,17 @@ class GetAnalyticsCurrencySplitTests(unittest.TestCase):
             "acct-rub": {
                 "id": "acct-rub", "user": 1, "instrument": 1,
                 "title": "Card RUB", "type": "ccard", "balance": 0,
+                "inBalance": True,
             },
             "acct-kzt": {
                 "id": "acct-kzt", "user": 1, "instrument": 2,
                 "title": "Card KZT", "type": "ccard", "balance": 0,
+                "inBalance": True,
             },
         }
         cache.CACHE.data["tag"] = {
             "tag-foreign": {
-                "id": "tag-foreign", "title": "Иностранные сервисы", "parent": None,
+                "id": "tag-foreign", "title": "Subscription Category", "parent": None,
             },
         }
         cache.CACHE.data["transaction"] = {
@@ -914,24 +922,25 @@ class GetAnalyticsCurrencySplitTests(unittest.TestCase):
         result = json.loads(asyncio.run(tools.tool_get_analytics({
             "start_date": "2026-04-01",
             "end_date": "2026-04-30",
-            "type": "expense",
+            "report": "outcome",
             "group_by": "category",
         })))
 
-        self.assertEqual(result["transactionCount"], 3)
+        self.assertEqual(result["transaction_count"], 3)
         self.assertEqual(
-            result["grandTotalByCurrency"], {"RUB": 300, "KZT": 50}
+            {currency: total["value"] for currency, total in result["totals"]["by_currency"].items()},
+            {"KZT": 50, "RUB": 300},
         )
 
         groups = result["groups"]
-        named_foreign = [g for g in groups if g["name"] == "Иностранные сервисы"]
+        named_foreign = [g for g in groups if g["name"] == "Subscription Category"]
         self.assertEqual(len(named_foreign), 2)
 
         by_currency = {g["currency"]: g for g in named_foreign}
         self.assertIn("RUB", by_currency)
         self.assertIn("KZT", by_currency)
-        self.assertEqual(by_currency["RUB"]["total"], 300)
-        self.assertEqual(by_currency["KZT"]["total"], 50)
+        self.assertEqual(by_currency["RUB"]["value"], 300)
+        self.assertEqual(by_currency["KZT"]["value"], 50)
 
 
 class GetRemindersRangeValidationTests(unittest.TestCase):
@@ -1110,6 +1119,7 @@ class GetAnalyticsCategoryPathTests(unittest.TestCase):
             "acct-rub": {
                 "id": "acct-rub", "user": 1, "instrument": 1,
                 "title": "Card RUB", "type": "ccard", "balance": 0,
+                "inBalance": True,
             },
         }
         cache.CACHE.data["tag"] = {
@@ -1139,11 +1149,11 @@ class GetAnalyticsCategoryPathTests(unittest.TestCase):
         result = json.loads(asyncio.run(tools.tool_get_analytics({
             "start_date": "2026-04-01",
             "end_date": "2026-04-30",
-            "type": "expense",
+            "report": "outcome",
             "group_by": "category",
         })))
 
-        self.assertEqual(result["transactionCount"], 2)
+        self.assertEqual(result["transaction_count"], 2)
         groups = result["groups"]
         self.assertEqual(len(groups), 2, f"Expected 2 groups, got {len(groups)}: {groups}")
 
@@ -1152,8 +1162,10 @@ class GetAnalyticsCategoryPathTests(unittest.TestCase):
         self.assertIn("Прочее / Питание", names)
 
         by_name = {g["name"]: g for g in groups}
-        self.assertEqual(by_name["Еда / Питание"]["total"], 100)
-        self.assertEqual(by_name["Прочее / Питание"]["total"], 200)
+        self.assertEqual(by_name["Еда / Питание"]["key"], "category:food-pitanie")
+        self.assertEqual(by_name["Прочее / Питание"]["key"], "category:other-pitanie")
+        self.assertEqual(by_name["Еда / Питание"]["value"], 100)
+        self.assertEqual(by_name["Прочее / Питание"]["value"], 200)
 
 
 class GetRemindersCategoryFilterTests(unittest.TestCase):
