@@ -79,7 +79,7 @@ This currently applies to `get_transactions`, `get_analytics`, and `analyze_budg
 - `get_instruments` — `include_all`
 - `get_budgets` — `month`(req, yyyy-MM)
 - `get_reminders` — `include_processed`, `active_only`, `limit`, `markers_limit`, `offset`, `marker_from`(yyyy-MM-dd), `marker_to`(yyyy-MM-dd), `category`(name), `type`(expense/income/transfer/all)
-- `get_analytics` — `start_date`(req), `end_date`, `report`(req: income/outcome/net), `group_by`(category/account/merchant; default category), `currency_mode`(split/scalar; default split)
+- `get_analytics` — `start_date`(req), `end_date`, `report`(req: income/outcome/net), `group_by`(category/account/merchant; default category), `currency_mode`(split/scalar; default split), `account_scope`(all/in_balance/selected; default in_balance), `account_ids`, `category_scope`(all/selected; default all), `category_ids`, `category_role`(primary/additional/any; only with selected category scope), `merchant_scope`(all/selected; default all), `merchant_ids`, `payees`
 - `suggest` — `payee`(req)
 - `get_merchants` — `search`, `limit`, `offset`
 - `check_auth_status` — no args
@@ -143,9 +143,18 @@ python scripts/cli.py --call '{"tool":"get_analytics","arguments":{"start_date":
 - `report` обязателен: `income`, `outcome` или `net`.
 - `group_by` опционален: по умолчанию `category`; также принимает `account` или `merchant`.
 - `currency_mode` опционален: по умолчанию `split`; также принимает `scalar`.
+- `account_scope` опционален: по умолчанию `in_balance`; принимает `all`, `in_balance`, `selected`. Для `selected` нужен непустой `account_ids`.
+- `category_scope` опционален: по умолчанию `all`; для `selected` нужен непустой `category_ids`. `category_role=primary|additional|any` разрешён только при `category_scope="selected"`.
+- `merchant_scope` опционален: по умолчанию `all`; для `selected` нужен непустой фильтр `merchant_ids` и/или `payees`.
 - Политики фиксированы: `tag_policy=primary_tag`, `currency_conversion=none`, `transfers=excluded`, `unknown_currency=separate_bucket`.
 - Поля ответа используют `snake_case`.
 - Стабильные ключи групп имеют префиксы `category:`, `account:`, `merchant:`; при `group_by="merchant"` fallback без сущности merchant использует ключ `payee:`.
+- Фильтры разных измерений объединяются через AND; значения внутри одного selected-измерения объединяются через OR.
+- Empty selected lists невалидны; неизвестные account/category/merchant IDs возвращают `ENTITY_NOT_FOUND`.
+- `account_scope="in_balance"` применяет фильтр к стороне операции, соответствующей `report`; аккаунты с отсутствующим `inBalance` исключаются, архивные аккаунты разрешены.
+- Группировка по категориям всегда primary; unknown tag и uncategorized — разные группы.
+- В merchant grouping сущность merchant имеет приоритет над payee; `payees` сравниваются как NFC exact case-sensitive строки.
+- Ответ возвращает resolved filters и policies. Unknown arguments и singular aliases (`account_id`, `category_id`, `merchant_id`, `payee`) отклоняются.
 - Движение денег проектируется как отдельный отчёт и не входит в `get_analytics`.
 
 ## Платёжный период (config.json)
@@ -299,7 +308,7 @@ python scripts/cli.py --call '{"tool":"get_reminders","arguments":{"marker_from"
 
 **Мотивация:** Устранение рассинхронизации между CACHE и references. Все данные (кроме ручных описаний) вычисляются из кэша на лету.
 
-### 2026-02-20 - Interactive Budget Mode Setup & Legacy Cleanup
+### 2026-02-20 - Interactive Budget Mode Setup & Cleanup
 
 **Интерактивная настройка режима:**
 - Добавлен новый tool `setup_budget_mode(mode)` для выбора режима работы с бюджетом
@@ -308,7 +317,7 @@ python scripts/cli.py --call '{"tool":"get_reminders","arguments":{"marker_from"
 - После выбора режима флаг устанавливается в `true` и больше не беспокоит пользователя
 - Изменить режим позже можно через `setup_budget_mode` или напрямую в config.json
 
-**Legacy код удалён:**
+**Устаревший код удалён:**
 - Полностью удалён устаревший параметр `include_off_balance` из `analyze_budget_detailed`
 - Вся логика теперь управляется через систему режимов (`budget_mode` + `mode_config`)
 - Флаг `count_all_movements` из конфигурации режима заменяет `include_off_balance`

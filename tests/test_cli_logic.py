@@ -878,10 +878,12 @@ class GetAnalyticsCurrencySplitTests(unittest.TestCase):
             "acct-rub": {
                 "id": "acct-rub", "user": 1, "instrument": 1,
                 "title": "Card RUB", "type": "ccard", "balance": 0,
+                "inBalance": True,
             },
             "acct-kzt": {
                 "id": "acct-kzt", "user": 1, "instrument": 2,
                 "title": "Card KZT", "type": "ccard", "balance": 0,
+                "inBalance": True,
             },
         }
         cache.CACHE.data["tag"] = {
@@ -1114,6 +1116,7 @@ class GetAnalyticsCategoryPathTests(unittest.TestCase):
             "acct-rub": {
                 "id": "acct-rub", "user": 1, "instrument": 1,
                 "title": "Card RUB", "type": "ccard", "balance": 0,
+                "inBalance": True,
             },
         }
         cache.CACHE.data["tag"] = {

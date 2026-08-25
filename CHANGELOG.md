@@ -8,6 +8,7 @@
   - `type=net` -> `report=net`
   - `type=all` and `turnover` are removed until a separate money-movement contract exists
 - Added required Analytics argument `report` and optional defaults `group_by=category`, `currency_mode=split`.
+- Documented strict Analytics filter slice for issue #20: account, category, and merchant scopes; selected-list validation; `ENTITY_NOT_FOUND`; filter echo; and rejection of unknown arguments and singular aliases.
 - Added fixed Analytics policies: `tag_policy=primary_tag`, `currency_conversion=none`, `transfers=excluded`, `unknown_currency=separate_bucket`.
 - Standardized Analytics output on `snake_case` and stable group key prefixes; `payee:` is only the merchant-grouping fallback key.
 
@@ -103,4 +104,4 @@
 - GrowFood with 5 markers/period was shown as 10k instead of 50k due to counting reminder outcome instead of sum of marker outcomes
 
 ### Unchanged
-- Legacy mode (without `marker_from`/`marker_to`) preserved for backward compatibility
+- recent-summary mode (without `marker_from`/`marker_to`) remains available for recent reminders

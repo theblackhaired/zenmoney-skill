@@ -105,13 +105,21 @@ TOOL_DOCS: dict[str, dict] = {
         },
     },
     "get_analytics": {
-        "desc": "Income, outcome, or net analytics grouped by category, account, or merchant",
+        "desc": "Income, outcome, or net analytics with strict account, category, and merchant scopes; filter dimensions combine with AND",
         "params": {
             "start_date": "str yyyy-MM-dd | -Nd | this_month | billing_period (required)",
             "end_date": "str yyyy-MM-dd | today | -Nd | this_month | billing_period (optional; auto-filled for this_month/billing_period)",
             "group_by": "str category|account|merchant (default category)",
             "report": "str income|outcome|net (required); turnover is reserved and returns UNSUPPORTED_CALCULATION",
             "currency_mode": "str split|scalar (default split); scalar requires at most one currency",
+            "account_scope": "str all|in_balance|selected (default in_balance); checks the report-side account, and in_balance includes archived accounts whose inBalance is true",
+            "account_ids": "list[str UUID] (selected account_scope only, non-empty); archived accounts are allowed",
+            "category_scope": "str all|selected (default all); selected requires category_ids",
+            "category_ids": "list[str UUID] (selected category_scope only, non-empty)",
+            "category_role": "str primary|additional|any (default any; selected category_scope only) — which transaction tag positions selected categories match",
+            "merchant_scope": "str all|selected (default all); selected requires merchant_ids or payees",
+            "merchant_ids": "list[str UUID] (selected merchant_scope only); merchant identity takes precedence over payee",
+            "payees": "list[str] exact case-sensitive NFC-normalized payee fallbacks used only when a transaction has no merchant ID",
         },
     },
     "suggest": {

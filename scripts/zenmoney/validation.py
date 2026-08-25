@@ -4,6 +4,7 @@ import datetime
 import math
 import re
 import secrets
+import unicodedata
 from typing import Any
 
 from . import cache as _cache
@@ -46,6 +47,25 @@ _REMINDER_FILTER_TYPES = _TRANSACTION_TYPES | {"all"}
 _ANALYTICS_REPORTS = {"income", "outcome", "net"}
 _ANALYTICS_GROUP_BY = {"category", "account", "merchant"}
 _ANALYTICS_CURRENCY_MODES = {"split", "scalar"}
+_ANALYTICS_ACCOUNT_SCOPES = {"all", "in_balance", "selected"}
+_ANALYTICS_CATEGORY_SCOPES = {"all", "selected"}
+_ANALYTICS_CATEGORY_ROLES = {"primary", "additional", "any"}
+_ANALYTICS_MERCHANT_SCOPES = {"all", "selected"}
+_ANALYTICS_ARGUMENTS = {
+    "start_date",
+    "end_date",
+    "report",
+    "group_by",
+    "currency_mode",
+    "account_scope",
+    "account_ids",
+    "category_scope",
+    "category_ids",
+    "category_role",
+    "merchant_scope",
+    "merchant_ids",
+    "payees",
+}
 _ACCOUNT_TYPES = {"cash", "ccard", "checking"}
 _REMINDER_INTERVALS = {"day", "week", "month", "year"}
 
@@ -171,6 +191,40 @@ def get_optional_uuid_list_arg(args: dict, key: str, *, item_label: str | None =
         except ValueError as exc:
             raise InvalidUUIDError(str(exc)) from exc
     return values
+
+
+def get_analytics_selector_ids(args: dict, key: str) -> list[str]:
+    if key not in args:
+        return []
+    values = args[key]
+    if not isinstance(values, list):
+        raise InvalidArgumentError(f"{key} must be a list of UUID strings")
+    normalized: list[str] = []
+    for i, value in enumerate(values):
+        field = f"{key}[{i}]"
+        if not isinstance(value, str):
+            raise InvalidUUIDError(f"{field} must be a UUID string")
+        value = _ensure_not_empty_string(value, field, error_cls=InvalidUUIDError)
+        try:
+            _validate_uuid(value, field)
+        except ValueError as exc:
+            raise InvalidUUIDError(str(exc)) from exc
+        normalized.append(value)
+    return sorted(set(normalized))
+
+
+def get_analytics_payees(args: dict) -> list[str]:
+    if "payees" not in args:
+        return []
+    values = args["payees"]
+    if not isinstance(values, list):
+        raise InvalidArgumentError("payees must be a list of non-empty strings")
+    normalized: list[str] = []
+    for i, value in enumerate(values):
+        if not isinstance(value, str) or not value.strip():
+            raise InvalidArgumentError(f"payees[{i}] must be a non-empty string")
+        normalized.append(unicodedata.normalize("NFC", value))
+    return sorted(set(normalized))
 
 
 def get_optional_date_arg(args: dict, key: str) -> str | None:
@@ -459,6 +513,27 @@ def validate_tool_args(name: str, args: dict) -> dict:
                     "accepted_values": accepted_values,
                 },
             )
+        removed_filter_aliases = {
+            "account_id": "account_scope=selected with account_ids",
+            "category_id": "category_scope=selected with category_ids",
+            "merchant_id": "merchant_scope=selected with merchant_ids",
+            "payee": "merchant_scope=selected with payees",
+        }
+        for removed_argument, replacement in removed_filter_aliases.items():
+            if removed_argument in normalized:
+                raise InvalidArgumentError(
+                    f"Removed argument '{removed_argument}' is not supported; use {replacement}",
+                    {"removed_argument": removed_argument, "replacement": replacement},
+                )
+        unknown_arguments = sorted(set(normalized) - _ANALYTICS_ARGUMENTS)
+        if unknown_arguments:
+            raise InvalidArgumentError(
+                f"Unknown get_analytics arguments: {', '.join(unknown_arguments)}",
+                {
+                    "unknown_arguments": unknown_arguments,
+                    "accepted_arguments": sorted(_ANALYTICS_ARGUMENTS),
+                },
+            )
         if "start_date" not in normalized:
             raise InvalidArgumentError("start_date is required")
         normalized["start_date"], normalized_end_date = normalize_period_range(normalized)
@@ -483,6 +558,93 @@ def validate_tool_args(name: str, args: dict) -> dict:
             _ANALYTICS_CURRENCY_MODES,
             default="split",
         )
+
+        normalized["account_scope"] = get_enum_arg(
+            normalized,
+            "account_scope",
+            _ANALYTICS_ACCOUNT_SCOPES,
+            default="in_balance",
+        )
+        account_ids_present = "account_ids" in normalized
+        normalized["account_ids"] = get_analytics_selector_ids(normalized, "account_ids")
+        if normalized["account_scope"] == "selected":
+            if not normalized["account_ids"]:
+                raise InvalidArgumentError("account_ids must be non-empty when account_scope=selected")
+            unknown_ids = [
+                account_id
+                for account_id in normalized["account_ids"]
+                if not _cache.CACHE.get_account(account_id)
+            ]
+            if unknown_ids:
+                raise EntityNotFoundError(
+                    "Selected analytics accounts were not found",
+                    {"entity_type": "account", "ids": unknown_ids},
+                )
+        elif account_ids_present:
+            raise InvalidArgumentError("account_ids is valid only when account_scope=selected")
+
+        normalized["category_scope"] = get_enum_arg(
+            normalized,
+            "category_scope",
+            _ANALYTICS_CATEGORY_SCOPES,
+            default="all",
+        )
+        category_role_present = "category_role" in normalized
+        normalized["category_role"] = get_enum_arg(
+            normalized,
+            "category_role",
+            _ANALYTICS_CATEGORY_ROLES,
+            default="any",
+        )
+        category_ids_present = "category_ids" in normalized
+        normalized["category_ids"] = get_analytics_selector_ids(normalized, "category_ids")
+        if normalized["category_scope"] == "selected":
+            if not normalized["category_ids"]:
+                raise InvalidArgumentError("category_ids must be non-empty when category_scope=selected")
+            unknown_ids = [
+                category_id
+                for category_id in normalized["category_ids"]
+                if not _cache.CACHE.get_tag(category_id)
+            ]
+            if unknown_ids:
+                raise EntityNotFoundError(
+                    "Selected analytics categories were not found",
+                    {"entity_type": "category", "ids": unknown_ids},
+                )
+        elif category_ids_present:
+            raise InvalidArgumentError("category_ids is valid only when category_scope=selected")
+        elif category_role_present:
+            raise InvalidArgumentError("category_role is valid only when category_scope=selected")
+
+        normalized["merchant_scope"] = get_enum_arg(
+            normalized,
+            "merchant_scope",
+            _ANALYTICS_MERCHANT_SCOPES,
+            default="all",
+        )
+        merchant_ids_present = "merchant_ids" in normalized
+        payees_present = "payees" in normalized
+        normalized["merchant_ids"] = get_analytics_selector_ids(normalized, "merchant_ids")
+        normalized["payees"] = get_analytics_payees(normalized)
+        if normalized["merchant_scope"] == "selected":
+            if not normalized["merchant_ids"] and not normalized["payees"]:
+                raise InvalidArgumentError(
+                    "merchant_ids or payees must be non-empty when merchant_scope=selected"
+                )
+            unknown_ids = [
+                merchant_id
+                for merchant_id in normalized["merchant_ids"]
+                if not _cache.CACHE.get_merchant(merchant_id)
+            ]
+            if unknown_ids:
+                raise EntityNotFoundError(
+                    "Selected analytics merchants were not found",
+                    {"entity_type": "merchant", "ids": unknown_ids},
+                )
+        elif merchant_ids_present or payees_present:
+            raise InvalidArgumentError(
+                "merchant_ids and payees are valid only when merchant_scope=selected"
+            )
     elif name == "get_merchants":
         normalized["limit"] = get_non_negative_int_arg(normalized, "limit", 50)
         normalized["offset"] = get_non_negative_int_arg(normalized, "offset", 0)

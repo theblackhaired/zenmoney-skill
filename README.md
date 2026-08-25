@@ -71,12 +71,16 @@ Currently this applies to `get_transactions`, `get_analytics`, and `analyze_budg
 - `report` is required: `income`, `outcome`, or `net`.
 - `group_by` is optional: `category` by default; also accepts `account` or `merchant`.
 - `currency_mode` is optional: `split` by default; also accepts `scalar`.
+- `account_scope` is optional: `in_balance` by default; also accepts `all` or `selected` with `account_ids`.
+- `category_scope` is optional: `all` by default; `selected` requires `category_ids` and may use `category_role=primary|additional|any`.
+- `merchant_scope` is optional: `all` by default; `selected` requires at least one of `merchant_ids` or `payees`.
 - `tag_policy` is `primary_tag`.
 - `currency_conversion` is `none`.
 - `transfers` are `excluded`.
 - `unknown_currency` is `separate_bucket`.
 - Output field names use `snake_case`.
 - Stable group keys are prefixed: `category:`, `account:`, `merchant:`; merchant grouping may use `payee:` as the fallback key when no merchant entity is available.
+- Filter dimensions combine with AND; values inside one selected dimension combine with OR. Empty selected lists are invalid, unknown entity IDs return `ENTITY_NOT_FOUND`, and unknown arguments or singular aliases are rejected.
 - Money-movement totals are not part of `get_analytics` until a separate money-movement contract exists.
 - Full Analytics output contract: [docs/plans-analytics-parity.md](docs/plans-analytics-parity.md).
 

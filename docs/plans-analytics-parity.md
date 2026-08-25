@@ -148,13 +148,18 @@ rowTotal = fact + R
 - политику разницы по категориям;
 - места и магазины.
 
-`net` и движение денег — разные контракты. `get_analytics` не возвращает общий показатель движения денег и не принимает aggregate/all-запрос, пока не появится отдельный money-movement contract. Для смешанных валют отчёт возвращает группы по валютам без общей суммы. Запрос scalar total завершается структурированной ошибкой `MIXED_CURRENCY`; общая сумма без подтверждённого курса и даты пересчёта запрещена.
+`net` и движение денег — разные контракты. `get_analytics` не возвращает общий показатель движения денег и не принимает aggregate/all-запрос, пока не появится отдельный money-movement contract. Для смешанных валют отчёт возвращает группы по валютам без общей суммы. Запрос `currency_mode=scalar` завершается структурированной ошибкой `MIXED_CURRENCY`; общая сумма без подтверждённого курса и даты пересчёта запрещена.
 
 Первый breaking-срез `get_analytics`:
 
 - `report` обязателен и принимает только `income`, `outcome`, `net`;
 - `group_by` опционален: по умолчанию `category`; принимает `category`, `account`, `merchant`;
 - `currency_mode` опционален: по умолчанию `split`; принимает `split` или `scalar`;
+- `account_scope` опционален: по умолчанию `in_balance`; принимает `all`, `in_balance`, `selected`;
+- `category_scope` опционален: по умолчанию `all`; принимает `all`, `selected`;
+- `category_role` принимает `primary`, `additional`, `any` и разрешён только при `category_scope=selected`;
+- `merchant_scope` опционален: по умолчанию `all`; принимает `all`, `selected`;
+- `account_ids`, `category_ids`, `merchant_ids`, `payees` — plural-only selected-фильтры;
 - `currency_mode=scalar` разрешён только для одной валюты, иначе возвращает `MIXED_CURRENCY`;
 - поля ответа используют `snake_case`;
 - стабильные ключи групп имеют префиксы `category:`, `account:`, `merchant:`; при группировке `merchant` fallback без сущности merchant использует ключ `payee:`;
@@ -162,6 +167,28 @@ rowTotal = fact + R
 - `currency_conversion=none`: валюта берётся сначала из соответствующей стороны транзакции, затем из инструмента счёта;
 - `unknown_currency=separate_bucket`: неизвестная валюта получает отдельный bucket, а не `RUB`;
 - `transfers=excluded`: переводы остаются исключены из этого среза до подтверждения shared classifier.
+
+Нормативный filter contract:
+
+- фильтр счёта применяется к стороне операции, соответствующей `report`; `income` фильтрует income-side account, `outcome` фильтрует outcome-side account, `net` применяет report-side правило к обеим сторонам, участвующим в расчёте;
+- `account_scope=all` не фильтрует по `Account.inBalance`;
+- `account_scope=in_balance` включает только аккаунты с `inBalance=true`; аккаунты с отсутствующим `inBalance` исключаются;
+- `account_scope=selected` требует непустой `account_ids`; архивные аккаунты разрешены, если они подходят выбранному scope;
+- `category_scope=all` не фильтрует по тегам;
+- `category_scope=selected` требует непустой `category_ids`; `category_role` задаёт, где искать тег: `primary`, `additional` или `any`;
+- `category_role` без `category_scope=selected` невалиден;
+- группировка по категориям всегда строится по primary tag; additional tags не создают групп;
+- unknown tag и uncategorized — разные состояния и разные группы;
+- `merchant_scope=all` не фильтрует по merchant/payee;
+- `merchant_scope=selected` требует хотя бы один непустой фильтр `merchant_ids` или `payees`;
+- если у транзакции есть merchant entity, merchant имеет приоритет над payee; payee используется только как fallback;
+- `payees` сравниваются после NFC normalization как exact case-sensitive строки;
+- разные dimensions (`account`, `category`, `merchant`) объединяются через AND;
+- значения внутри одного selected dimension объединяются через OR;
+- пустой selected-фильтр невалиден;
+- неизвестные account/category/merchant IDs возвращают `ENTITY_NOT_FOUND`;
+- ответ echo'ит resolved filters и policies;
+- unknown arguments и singular aliases (`account_id`, `category_id`, `merchant_id`, `payee`) отклоняются.
 
 Нормативный output contract:
 
@@ -174,7 +201,7 @@ rowTotal = fact + R
 - `currency_mode=scalar` возвращает `totals` с полями `currency`, `income`, `outcome`, `value`, `transaction_count` и scalar `value` в каждой группе; в этой форме нет `currencies` и `totals.by_currency`;
 - JSON-объекты ответа не используют duplicate keys;
 - для `split` identity группы — пара `(key, currency)`;
-- `transaction_count` считает distinct transactions; при `tag_policy=primary_tag` сумма group counts сходится с total count, потому что дополнительные теги не размножают транзакцию по группам;
+- `transaction_count` считает distinct transactions; при `tag_policy=primary_tag` сумма group counts сходится с верхнеуровневым `transaction_count`, потому что дополнительные теги не размножают транзакцию по группам;
 - сортировка: `currency` ascending, затем `abs(value)` descending для `net`, иначе `value` descending, затем NFC-normalized `name` ascending и NFC-normalized `key` ascending.
 
 APK подтверждает дополнительные контракты:

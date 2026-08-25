@@ -93,6 +93,14 @@ async def tool_get_analytics(args: dict) -> str:
     report = args["report"]
     group_by = args["group_by"]
     currency_mode = args["currency_mode"]
+    account_scope = args["account_scope"]
+    account_ids = set(args["account_ids"])
+    category_scope = args["category_scope"]
+    category_role = args["category_role"]
+    category_ids = set(args["category_ids"])
+    merchant_scope = args["merchant_scope"]
+    merchant_ids = set(args["merchant_ids"])
+    payees = set(args["payees"])
 
     txs = [t for t in _cache.CACHE.transactions() if not t.get("deleted")]
     txs = [t for t in txs if t.get("date", "") >= start_date and t.get("date", "") <= end_date]
@@ -102,12 +110,41 @@ async def tool_get_analytics(args: dict) -> str:
         tx_type = _tx_type(t)
         if tx_type not in ("expense", "income"):
             continue
-        if (
-            report == "net"
-            or (report == "income" and tx_type == "income")
-            or (report == "outcome" and tx_type == "expense")
-        ):
-            filtered.append(t)
+        expected_type = "income" if report == "income" else "expense"
+        if report != "net" and tx_type != expected_type:
+            continue
+
+        side = "outcome" if tx_type == "expense" else "income"
+        account_id = t.get(f"{side}Account")
+        account = _cache.CACHE.get_account(account_id) if account_id else None
+        if account_scope == "in_balance" and not (account and account.get("inBalance") is True):
+            continue
+        if account_scope == "selected" and account_id not in account_ids:
+            continue
+
+        if category_scope == "selected":
+            tag_ids = [str(tag_id) for tag_id in (t.get("tag") or [])]
+            if category_role == "primary":
+                eligible_tags = tag_ids[:1]
+            elif category_role == "additional":
+                eligible_tags = tag_ids[1:]
+            else:
+                eligible_tags = tag_ids
+            if category_ids.isdisjoint(eligible_tags):
+                continue
+
+        if merchant_scope == "selected":
+            merchant_id = t.get("merchant")
+            if merchant_id:
+                if str(merchant_id) not in merchant_ids:
+                    continue
+            else:
+                payee = t.get("payee")
+                normalized_payee = unicodedata.normalize("NFC", payee) if isinstance(payee, str) else None
+                if normalized_payee not in payees:
+                    continue
+
+        filtered.append(t)
 
     # A transaction's own side instrument is authoritative. The account is a
     # fallback for older records that do not carry the instrument field.
@@ -129,12 +166,12 @@ async def tool_get_analytics(args: dict) -> str:
             if tag_ids:
                 tag_id = str(tag_ids[0])
                 group_key = f"category:{tag_id}"
-                name = _category_full_path(tag_id) or "Uncategorized"
+                name = _category_full_path(tag_id) or "Unknown Category"
             else:
                 group_key = "category:uncategorized"
                 name = "Uncategorized"
         elif group_by == "account":
-            group_key = f"account:{account_id}" if account_id else "account:unknown"
+            group_key = f"account:{account_id}" if account else "account:unknown"
             name = account["title"] if account else "Unknown Account"
         else:
             merchant_id = tx.get("merchant")
@@ -144,8 +181,9 @@ async def tool_get_analytics(args: dict) -> str:
                 group_key = f"merchant:{merchant_id}"
                 name = merchant["title"] if merchant else (payee or "Unknown Merchant")
             elif payee:
-                group_key = f"payee:{payee}"
-                name = payee
+                normalized_payee = unicodedata.normalize("NFC", str(payee))
+                group_key = f"payee:{normalized_payee}"
+                name = normalized_payee
             else:
                 group_key = "merchant:unknown"
                 name = "Unknown Merchant"
@@ -222,6 +260,25 @@ async def tool_get_analytics(args: dict) -> str:
             "currency_conversion": "none",
             "transfers": "excluded",
             "unknown_currency": "separate_bucket",
+            "account_filter": "report_side",
+            "category_filter": "exact_tag_id",
+            "merchant_identity": "merchant_then_payee_exact",
+        },
+        "filters": {
+            "account": {
+                "scope": account_scope,
+                "ids": args["account_ids"],
+            },
+            "category": {
+                "scope": category_scope,
+                "role": category_role,
+                "ids": args["category_ids"],
+            },
+            "merchant": {
+                "scope": merchant_scope,
+                "ids": args["merchant_ids"],
+                "payees": args["payees"],
+            },
         },
         "groups": groups_list,
     }
