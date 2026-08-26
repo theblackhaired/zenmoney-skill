@@ -1,0 +1,7 @@
+interface:
+  display_name: "ZenMoney"
+  short_description: "Manage ZenMoney accounts, budgets, and spending"
+  icon_small: "./assets/icon.svg"
+  icon_large: "./assets/icon.svg"
+  brand_color: "#EC433D"
+  default_prompt: "Use $zenmoney to review my current budget and upcoming expenses."
