@@ -303,7 +303,8 @@ class BudgetEdgeContractTests(unittest.TestCase):
         self.assertEqual(forecast_by_date["2026-07-21"]["planned_amount"], 20)
         self.assertEqual(result["forecast"][-1]["cumulative"], 100)
 
-    def test_forecast_transfer_markers_do_not_count_as_plans_payments(self):
+    def test_disabled_forecast_excludes_transfer_markers_from_plans_payments(self):
+        cache.CACHE.data["user"]["1"]["isForecastEnabled"] = False
         loan_account = "55555555-5555-5555-5555-555555555555"
         cache.CACHE.data["account"][loan_account] = {
             "id": loan_account,
@@ -405,7 +406,8 @@ class BudgetEdgeContractTests(unittest.TestCase):
         forecast_by_date = {point["date"]: point for point in result["forecast"]}
         self.assertEqual(forecast_by_date["2026-07-20"]["planned_amount"], 10000)
 
-    def test_forecast_category_marker_does_not_count_as_plans_payment(self):
+    def test_disabled_forecast_excludes_category_marker_from_plans_payment(self):
+        cache.CACHE.data["user"]["1"]["isForecastEnabled"] = False
         cache.CACHE.data["reminder"] = {
             "forecast-category-reminder": {
                 "id": "forecast-category-reminder",
@@ -443,6 +445,83 @@ class BudgetEdgeContractTests(unittest.TestCase):
         self.assertEqual(result["summary"]["expense"]["for_balance"], 0)
         self.assertEqual(result["calendar"], [])
         self.assertTrue(all(point["planned_amount"] == 0 for point in result["forecast"]))
+
+    def test_forecast_marker_counts_when_user_forecast_is_enabled(self):
+        cache.CACHE.data["user"]["1"]["isForecastEnabled"] = True
+        cache.CACHE.data["reminder"] = {
+            "forecast-category-reminder": {
+                "id": "forecast-category-reminder",
+                "outcomeAccount": ACCOUNT_ID,
+                "incomeAccount": ACCOUNT_ID,
+                "outcomeInstrument": 1,
+                "incomeInstrument": 1,
+                "tag": [TAG_ID],
+            }
+        }
+        cache.CACHE.data["reminderMarker"] = {
+            "forecast-category-marker": {
+                "id": "forecast-category-marker",
+                "reminder": "forecast-category-reminder",
+                "date": "2026-07-20",
+                "state": "planned",
+                "isForecast": True,
+                "outcome": 80,
+                "income": 0,
+                "outcomeAccount": ACCOUNT_ID,
+                "incomeAccount": ACCOUNT_ID,
+                "outcomeInstrument": 1,
+                "incomeInstrument": 1,
+                "tag": [TAG_ID],
+            }
+        }
+
+        result = self._run_analyze({
+            "period": "billing_period",
+            "show_forecast": True,
+            "show_calendar": True,
+        })
+
+        self.assertEqual(result["summary"]["expense"]["planned"], 80)
+        self.assertEqual(result["summary"]["expense"]["for_balance"], 80)
+        self.assertEqual(result["summary"]["balance"], -80)
+        self.assertEqual(result["calendar"][0]["amount"], 80)
+
+    def test_forecast_budget_side_is_gated_by_user_forecast_setting(self):
+        cache.CACHE.data["user"]["1"]["isForecastEnabled"] = False
+        cache.CACHE.data["budget"] = {
+            "regular": {
+                "user": 1,
+                "date": "2026-07-01",
+                "tag": TAG_ID,
+                "income": 0,
+                "outcome": 1000,
+                "incomeLock": False,
+                "outcomeLock": False,
+                "isIncomeForecast": False,
+                "isOutcomeForecast": False,
+            },
+            "forecast": {
+                "user": 1,
+                "date": "2026-07-01",
+                "tag": TAG_ID,
+                "income": 0,
+                "outcome": 2000,
+                "incomeLock": False,
+                "outcomeLock": False,
+                "isIncomeForecast": False,
+                "isOutcomeForecast": True,
+            },
+        }
+
+        result = self._run_analyze({
+            "period": "billing_period",
+            "show_forecast": False,
+            "show_calendar": False,
+        })
+
+        self.assertEqual(result["summary"]["expense"]["category_budget"], 1000)
+        self.assertEqual(result["summary"]["expense"]["for_balance"], 1000)
+        self.assertEqual(result["summary"]["balance"], -1000)
 
     def test_deleted_transfer_marker_does_not_count_as_fact_or_plan(self):
         loan_account = "55555555-5555-5555-5555-555555555555"

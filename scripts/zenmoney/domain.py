@@ -286,8 +286,10 @@ def _fmt_budget(b: dict) -> dict:
         "month": b.get("date", ""),
         "income": b.get("income", 0),
         "incomeLock": b.get("incomeLock", False),
+        "isIncomeForecast": b.get("isIncomeForecast", False),
         "outcome": b.get("outcome", 0),
         "outcomeLock": b.get("outcomeLock", False),
+        "isOutcomeForecast": b.get("isOutcomeForecast", False),
     }
 
     if parent_tag:

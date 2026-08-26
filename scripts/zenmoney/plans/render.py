@@ -173,7 +173,7 @@ def _period_events(ctx: PlansContext, start: str, end: str) -> list[PlanEvent]:
         if item.get("id") is not None
     }
     for marker in ctx.markers:
-        if marker.get("isForecast") is True:
+        if not ctx.forecast_enabled and marker.get("isForecast") is True:
             continue
         marker_state = marker.get("state")
         if marker_state == "deleted":
@@ -235,9 +235,11 @@ def _category_rows(
             )
         bucket = category_bucket(category_id, ctx.categories)
         row = sides[bucket.category_id]
-        row["income_budget"] += Decimal(str(budget.get("income", 0) or 0))
+        if ctx.forecast_enabled or budget.get("isIncomeForecast") is not True:
+            row["income_budget"] += Decimal(str(budget.get("income", 0) or 0))
         row["income_lock"] = row["income_lock"] or budget.get("incomeLock") is True
-        row["outcome_budget"] += Decimal(str(budget.get("outcome", 0) or 0))
+        if ctx.forecast_enabled or budget.get("isOutcomeForecast") is not True:
+            row["outcome_budget"] += Decimal(str(budget.get("outcome", 0) or 0))
         row["outcome_lock"] = row["outcome_lock"] or budget.get("outcomeLock") is True
 
     calendar: list[dict[str, Any]] = []

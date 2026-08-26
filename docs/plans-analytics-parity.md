@@ -104,12 +104,13 @@ rowTotal = fact + R
 
 ### Прогноз
 
-APK подтверждает отдельный признак `reminderMarker.isForecast`: это сгенерированные forecast-строки, а не реальные плановые платежи пользователя. В Plans summary/category/calendar runtime исключает `isForecast=true`, чтобы виртуальные выплаты по кредитам/накоплениям не попадали в «Свободно/не хватает» как обычные `planned` markers.
+APK подтверждает пользовательский переключатель `user.isForecastEnabled` и отдельные признаки прогноза у marker и сторон бюджета. При выключенном прогнозе Plans исключает `reminderMarker.isForecast=true`, обнуляет только помеченную `budget.isIncomeForecast` или `budget.isOutcomeForecast` сторону бюджета и сохраняет вторую сторону той же строки. При включённом прогнозе эти markers и суммы бюджета участвуют в расчёте. Если поле `user.isForecastEnabled` отсутствует в старом кеше, применяется APK-default `true`.
 
 Контракт первой версии:
 
 - обычный будущий marker учитывается один раз;
-- `isForecast=true` marker не входит в Plans summary, категории, календарь и дневной forecast;
+- `isForecast=true` marker не входит в Plans summary, категории, календарь и дневной forecast только при `user.isForecastEnabled=false`;
+- `isIncomeForecast` и `isOutcomeForecast` обнуляют при выключенном прогнозе только соответствующую сторону бюджета;
 - `processed` marker не дублирует созданную по нему транзакцию;
 - `deleted` и прошлые markers не входят в прогноз;
 - отключение календарного вывода не отключает сам расчёт прогноза.
