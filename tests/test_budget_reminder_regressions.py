@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from zenmoney import budget_tools, cache, config, domain, reminder_tools, tools, validation
+from zenmoney.plans.render import _forecast_operations
 
 
 ACCOUNT_ID = "11111111-1111-1111-1111-111111111111"
@@ -300,6 +301,121 @@ class BudgetReminderRegressionTests(unittest.TestCase):
         self.assertEqual(result["summary"]["expense"]["category_difference_policy"], "NONE")
         self.assertEqual(result["summary"]["expense"]["processed_planned"], 100)
         self.assertEqual(result["summary"]["expense"]["for_balance"], 300)
+
+    def test_unlinked_processed_transfer_supplies_fact_until_transaction_materializes(self):
+        destination_account_id = "77777777-7777-7777-7777-777777777777"
+        cache.CACHE.data["account"][destination_account_id] = {
+            "id": destination_account_id,
+            "user": 1,
+            "instrument": 1,
+            "title": "Destination",
+            "type": "checking",
+            "balance": 0,
+            "inBalance": True,
+            "archive": False,
+        }
+        cache.CACHE.data["reminder"][REMINDER_ID] = {
+            **_expense_reminder(start_date="2026-07-10"),
+            "incomeAccount": destination_account_id,
+            "income": 100,
+        }
+        cache.CACHE.data["reminderMarker"] = {
+            "processed-transfer": {
+                "id": "processed-transfer",
+                "reminder": REMINDER_ID,
+                "date": "2026-07-10",
+                "state": "processed",
+                "income": 100,
+                "outcome": 100,
+            }
+        }
+
+        unlinked = self._analyze_budget()
+
+        self.assertEqual(unlinked["summary"]["transfers"]["actual_out"], 100)
+        self.assertEqual(unlinked["summary"]["transfers"]["remaining_net"], 0)
+        self.assertEqual(unlinked["summary"]["balance_breakdown"]["current_expense"], 100)
+        self.assertEqual(unlinked["summary"]["balance_breakdown"]["remaining_plan"], 0)
+        self.assertEqual(unlinked["transfers"][0]["reason"], "balance_to_balance_neutral")
+        self.assertEqual(
+            unlinked["transfers"][0]["fallback"]["reason"],
+            "unlinked_processed_marker_fallback",
+        )
+        self.assertEqual(unlinked["transfers"][0]["net"], -100)
+        self.assertEqual(unlinked["transfers"][0]["event"]["status"], "processed")
+        self.assertEqual(unlinked["transfers"][0]["fallback"]["status"], "processed")
+        self.assertEqual(_forecast_operations([], unlinked["transfers"]), [])
+
+        cache.CACHE.data["transaction"] = {
+            "materialized": {
+                "id": "materialized",
+                "date": "2026-07-10",
+                "income": 100,
+                "outcome": 100,
+                "incomeAccount": destination_account_id,
+                "outcomeAccount": ACCOUNT_ID,
+                "incomeInstrument": 1,
+                "outcomeInstrument": 1,
+                "tag": [],
+                "reminderMarker": "processed-transfer",
+            }
+        }
+
+        linked = self._analyze_budget()
+
+        self.assertEqual(linked["summary"]["transfers"]["actual_out"], 0)
+        self.assertEqual(linked["summary"]["transfers"]["remaining_net"], 0)
+        self.assertEqual(linked["summary"]["balance_breakdown"]["current_expense"], 0)
+        self.assertEqual(linked["summary"]["balance_breakdown"]["remaining_plan"], 0)
+        marker_row = next(
+            item for item in linked["transfers"] if item["event"]["id"] == "processed-transfer"
+        )
+        self.assertEqual(marker_row["reason"], "balance_to_balance_neutral")
+        self.assertNotIn("fallback", marker_row)
+
+    def test_actual_inbound_transfer_preserves_current_remaining_balance_identity(self):
+        external_account_id = "88888888-8888-8888-8888-888888888888"
+        cache.CACHE.data["account"][external_account_id] = {
+            "id": external_account_id,
+            "user": 1,
+            "instrument": 1,
+            "title": "External savings",
+            "type": "checking",
+            "balance": 0,
+            "inBalance": False,
+            "savings": True,
+            "archive": False,
+        }
+        cache.CACHE.data["transaction"] = {
+            "inbound": {
+                "id": "inbound",
+                "date": "2026-07-10",
+                "income": 100,
+                "outcome": 100,
+                "incomeAccount": ACCOUNT_ID,
+                "outcomeAccount": external_account_id,
+                "incomeInstrument": 1,
+                "outcomeInstrument": 1,
+                "tag": [],
+            }
+        }
+
+        result = self._analyze_budget()
+        summary = result["summary"]
+        breakdown = summary["balance_breakdown"]
+
+        self.assertEqual(summary["transfers"]["actual_in"], 100)
+        self.assertEqual(summary["transfers"]["actual_net"], -100)
+        self.assertEqual(breakdown["current_expense"], -100)
+        self.assertEqual(breakdown["remaining_plan"], 0)
+        self.assertEqual(
+            summary["balance"],
+            summary["opening_balance"]["total"]
+            + summary["income"]["for_balance"]
+            + summary["exchange_difference"]["fact"]
+            - breakdown["current_expense"]
+            - breakdown["remaining_plan"],
+        )
 
     def test_zero_locked_budget_does_not_reserve_planned_marker(self):
         cache.CACHE.data["budget"][self._budget_key(TAG_ID)] = _budget_entry(TAG_ID, 0, outcome_lock=True)
