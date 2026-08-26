@@ -348,7 +348,10 @@ class PlansRenderIntegrationContractTests(unittest.TestCase):
         expense = result["expenses"][0]
         self.assertEqual(expense["actual"], 100)
         self.assertEqual(expense["actual_with_refunds"], 70)
-        self.assertEqual(expense["remaining"], 130)
+        self.assertEqual(expense["plan"], 200)
+        self.assertEqual(expense["remaining"], 100)
+        self.assertEqual(expense["overspend"], 0)
+        self.assertEqual(expense["reserve_remaining"], 130)
         self.assertEqual(result["summary"]["expense"]["actual_with_refunds"], 70)
         self.assertEqual(result["summary"]["expense"]["category_difference_policy"], "REFUNDS")
         self.assertEqual(result["income"][0]["actual_with_refunds"], 20)

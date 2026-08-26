@@ -837,6 +837,8 @@ def _expense_summary(ctx: PlansContext, roots: tuple[PlanCategoryRow, ...]) -> d
 
 def _row_json(row: PlanCategoryRow, side_name: str) -> dict[str, Any]:
     side = getattr(row, side_name)
+    remaining = max(ZERO, side.effective_budget - side.fact)
+    overspend = max(ZERO, side.fact - side.effective_budget)
     data = {
         "category_id": row.category.category_id,
         "category_name": _category_name(row.category),
@@ -846,6 +848,10 @@ def _row_json(row: PlanCategoryRow, side_name: str) -> dict[str, Any]:
         "is_parent": bool(row.children),
         "actual": side.fact,
         "actual_with_refunds": side.fact_with_refund,
+        "plan": side.effective_budget,
+        "remaining": remaining,
+        "overspend": overspend,
+        "reserve_remaining": side.residue,
         "items": [],
         "children": [
             _row_json(child, side_name)
@@ -871,7 +877,6 @@ def _row_json(row: PlanCategoryRow, side_name: str) -> dict[str, Any]:
                 "processed_from_reminders": side.processed,
                 "budget": side.explicit_budget,
                 "outcome_lock": side.lock,
-                "remaining": side.residue,
             }
         )
     return data
