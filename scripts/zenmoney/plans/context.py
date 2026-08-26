@@ -32,6 +32,7 @@ class PlansContext:
     mode_name: str
     plan_balance_mode: str
     plan_settings: frozenset[str]
+    forecast_enabled: bool
     resolved_period: dict[str, Any]
     difference_calculation_mode: str = "NONE"
 
@@ -44,7 +45,7 @@ def build_context(
     budgets: list[dict[str, Any]],
     today: str,
 ) -> PlansContext:
-    mode_name, plan_balance_mode, plan_settings = _resolve_policy(
+    mode_name, plan_balance_mode, plan_settings, forecast_enabled = _resolve_policy(
         args,
         cfg,
         cache.users(),
@@ -75,6 +76,7 @@ def build_context(
         mode_name=mode_name,
         plan_balance_mode=plan_balance_mode,
         plan_settings=frozenset(plan_settings),
+        forecast_enabled=forecast_enabled,
         difference_calculation_mode=_resolve_difference_calculation_mode(
             args,
             cfg,
@@ -102,7 +104,7 @@ def _resolve_policy(
     args: Mapping[str, Any],
     cfg: Mapping[str, Any],
     users: list[dict[str, Any]],
-) -> tuple[str, str, set[str]]:
+) -> tuple[str, str, set[str], bool]:
     mode_name = args.get("budget_mode") or cfg.get("budget_mode")
     selected_user: dict[str, Any] | None = None
     if mode_name:
@@ -135,7 +137,13 @@ def _resolve_policy(
         plan_settings = parse_plan_settings(selected_user.get("planSettings"))
     if plan_balance_mode == BALANCE:
         plan_settings = set()
-    return mode_name, plan_balance_mode, plan_settings
+    selected_user = selected_user or select_plan_user(
+        users,
+        cfg.get("plan_user_id"),
+        allow_empty=True,
+    )
+    forecast_enabled = selected_user.get("isForecastEnabled") is not False
+    return mode_name, plan_balance_mode, plan_settings, forecast_enabled
 
 
 def _is_deleted(item: Mapping[str, Any]) -> bool:

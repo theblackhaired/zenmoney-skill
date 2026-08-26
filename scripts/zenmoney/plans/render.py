@@ -8,7 +8,7 @@ from typing import Any
 
 from .. import periods
 from ..analytics.category_difference import apply_category_difference
-from ..errors import ToolError, UnsupportedCalculationError
+from ..errors import InvalidArgumentError, ToolError, UnsupportedCalculationError
 from ..instrument_rates import (
     InstrumentRateCache,
     exchange_converter,
@@ -109,7 +109,7 @@ def _render_period(ctx: PlansContext, resolved_period: dict[str, Any]) -> dict[s
         if ctx.cfg.get("round_balance_to_integer", True)
         else balance_raw
     )
-    remaining_plan = expense["for_balance"] + transfer_totals["net"] - expense["actual"]
+    remaining_plan = expense["remaining"] + transfer_totals["remaining_net"]
     summary["balance_breakdown"] = {
         "total_income": income["for_balance"],
         "opening_balance": opening["total"],
@@ -117,6 +117,7 @@ def _render_period(ctx: PlansContext, resolved_period: dict[str, Any]) -> dict[s
         "total_expense_plan": expense["for_balance"],
         "total_transfers_net": transfer_totals["net"],
         "total_plan": expense["for_balance"] + transfer_totals["net"],
+        "current_expense": expense["actual"] + transfer_totals["actual_net"],
         "remaining_plan": remaining_plan,
         "formula": (
             f"{opening['total']} + {income['for_balance']} + {exchange['fact']} "
@@ -173,6 +174,15 @@ def _period_events(ctx: PlansContext, start: str, end: str) -> list[PlanEvent]:
         if item.get("id") is not None
     }
     for marker in ctx.markers:
+        if not ctx.forecast_enabled and marker.get("isForecast") is True:
+            continue
+        marker_state = marker.get("state")
+        if marker_state == "deleted":
+            continue
+        if marker_state not in {"planned", "processed"}:
+            raise InvalidArgumentError(
+                "reminderMarker state must be planned, processed, or deleted"
+            )
         if not start <= str(marker.get("date", "")) <= end:
             continue
         reminder = reminders.get(marker.get("reminder"))
@@ -226,9 +236,11 @@ def _category_rows(
             )
         bucket = category_bucket(category_id, ctx.categories)
         row = sides[bucket.category_id]
-        row["income_budget"] += Decimal(str(budget.get("income", 0) or 0))
+        if ctx.forecast_enabled or budget.get("isIncomeForecast") is not True:
+            row["income_budget"] += Decimal(str(budget.get("income", 0) or 0))
         row["income_lock"] = row["income_lock"] or budget.get("incomeLock") is True
-        row["outcome_budget"] += Decimal(str(budget.get("outcome", 0) or 0))
+        if ctx.forecast_enabled or budget.get("isOutcomeForecast") is not True:
+            row["outcome_budget"] += Decimal(str(budget.get("outcome", 0) or 0))
         row["outcome_lock"] = row["outcome_lock"] or budget.get("outcomeLock") is True
 
     calendar: list[dict[str, Any]] = []
@@ -437,7 +449,18 @@ def _transfers(
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
     out_total = ZERO
     in_total = ZERO
+    actual_out = ZERO
+    actual_in = ZERO
+    remaining_out = ZERO
+    remaining_in = ZERO
     result = []
+    # The context keeps every nondeleted cached transaction, so exact marker links
+    # suppress this fallback across periods; deleted links intentionally do not.
+    linked_marker_ids = {
+        str(transaction["reminderMarker"])
+        for transaction in ctx.transactions
+        if transaction.get("reminderMarker") is not None
+    }
     flows = {
         "excluded_income": [],
         "excluded_expense": [],
@@ -453,12 +476,31 @@ def _transfers(
             plan_balance_mode=ctx.plan_balance_mode,
             plan_settings=ctx.plan_settings,
         )
+        fallback_effect = _unlinked_processed_marker_fallback(
+            event, evaluated, ctx, linked_marker_ids
+        )
+        if fallback_effect is not None:
+            evaluated = {
+                **evaluated,
+                "effects": [fallback_effect],
+                "net": -fallback_effect["amount"],
+                "fallback": {
+                    "applied": True,
+                    "reason": "unlinked_processed_marker_fallback",
+                    "status": "processed",
+                },
+            }
         converted_effects = []
         for effect in evaluated["effects"]:
             instrument = _instrument_from_currency(ctx, effect["currency"])
             amount = convert(effect["amount"], instrument, target_instrument, event.date)
+            is_actual = event.source_type == "transaction" or fallback_effect is effect
             if effect["kind"] == "expense":
                 out_total += amount
+                if is_actual:
+                    actual_out += amount
+                else:
+                    remaining_out += amount
                 if event.source_type == "transaction":
                     flows["expense_facts"].append(
                         {
@@ -469,6 +511,10 @@ def _transfers(
                     )
             else:
                 in_total += amount
+                if is_actual:
+                    actual_in += amount
+                else:
+                    remaining_in += amount
                 if event.source_type == "transaction":
                     flows["income_facts"].append(
                         {
@@ -502,10 +548,43 @@ def _transfers(
             "out": out_total,
             "in": in_total,
             "net": out_total - in_total,
+            "actual_out": actual_out,
+            "actual_in": actual_in,
+            "actual_net": actual_out - actual_in,
+            "remaining_out": remaining_out,
+            "remaining_in": remaining_in,
+            "remaining_net": remaining_out - remaining_in,
             "description": "Directed balance-boundary transfers under ZenMoney PlanSetting policy",
         },
         flows,
     )
+
+
+def _unlinked_processed_marker_fallback(
+    event: PlanEvent,
+    evaluated: dict[str, Any],
+    ctx: PlansContext,
+    linked_marker_ids: set[str],
+) -> dict[str, Any] | None:
+    """Materialize ZM's fact for an unlinked processed same-currency transfer."""
+    if (
+        ctx.mode_name != "income_vs_expense"
+        or event.source_type != "reminder_marker"
+        or event.marker_state != "processed"
+        or event.source_id in linked_marker_ids
+        or event.kind != "transfer"
+        or evaluated["reason"] != "balance_to_balance_neutral"
+        or event.outcome_side is None
+        or event.income_side is None
+        or event.outcome_side.currency != event.income_side.currency
+    ):
+        return None
+    return {
+        "kind": "expense",
+        "amount": event.outcome_side.amount,
+        "currency": _currency_title(ctx, event.outcome_side.currency),
+        "source": "processed_marker_fallback",
+    }
 
 
 def _opening(

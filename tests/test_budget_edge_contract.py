@@ -303,6 +303,276 @@ class BudgetEdgeContractTests(unittest.TestCase):
         self.assertEqual(forecast_by_date["2026-07-21"]["planned_amount"], 20)
         self.assertEqual(result["forecast"][-1]["cumulative"], 100)
 
+    def test_disabled_forecast_excludes_transfer_markers_from_plans_payments(self):
+        cache.CACHE.data["user"]["1"]["isForecastEnabled"] = False
+        loan_account = "55555555-5555-5555-5555-555555555555"
+        cache.CACHE.data["account"][loan_account] = {
+            "id": loan_account,
+            "user": 1,
+            "instrument": 1,
+            "title": "Credit card",
+            "type": "ccard",
+            "balance": -5000,
+            "creditLimit": 100000,
+            "inBalance": False,
+            "archive": False,
+        }
+        cache.CACHE.data["reminder"] = {
+            "loan-reminder": {
+                "id": "loan-reminder",
+                "outcomeAccount": ACCOUNT_ID,
+                "incomeAccount": loan_account,
+                "outcomeInstrument": 1,
+                "incomeInstrument": 1,
+                "tag": [],
+            }
+        }
+        cache.CACHE.data["reminderMarker"] = {
+            "forecast-loan-marker": {
+                "id": "forecast-loan-marker",
+                "reminder": "loan-reminder",
+                "date": "2026-07-20",
+                "state": "planned",
+                "isForecast": True,
+                "outcome": 10000,
+                "income": 10000,
+                "outcomeAccount": ACCOUNT_ID,
+                "incomeAccount": loan_account,
+                "outcomeInstrument": 1,
+                "incomeInstrument": 1,
+                "tag": [],
+            }
+        }
+
+        result = self._run_analyze({
+            "period": "billing_period",
+            "show_forecast": True,
+            "show_calendar": True,
+        })
+
+        self.assertEqual(result["summary"]["transfers"]["out"], 0)
+        self.assertEqual(result["summary"]["balance"], 0)
+        self.assertEqual(result["transfers"], [])
+        self.assertTrue(all(point["planned_amount"] == 0 for point in result["forecast"]))
+
+    def test_ordinary_planned_transfer_marker_still_counts_as_plan_payment(self):
+        loan_account = "55555555-5555-5555-5555-555555555555"
+        cache.CACHE.data["account"][loan_account] = {
+            "id": loan_account,
+            "user": 1,
+            "instrument": 1,
+            "title": "Credit card",
+            "type": "ccard",
+            "balance": -5000,
+            "creditLimit": 100000,
+            "inBalance": False,
+            "archive": False,
+        }
+        cache.CACHE.data["reminder"] = {
+            "loan-reminder": {
+                "id": "loan-reminder",
+                "outcomeAccount": ACCOUNT_ID,
+                "incomeAccount": loan_account,
+                "outcomeInstrument": 1,
+                "incomeInstrument": 1,
+                "tag": [],
+            }
+        }
+        cache.CACHE.data["reminderMarker"] = {
+            "planned-loan-marker": {
+                "id": "planned-loan-marker",
+                "reminder": "loan-reminder",
+                "date": "2026-07-20",
+                "state": "planned",
+                "outcome": 10000,
+                "income": 10000,
+                "outcomeAccount": ACCOUNT_ID,
+                "incomeAccount": loan_account,
+                "outcomeInstrument": 1,
+                "incomeInstrument": 1,
+                "tag": [],
+            }
+        }
+
+        result = self._run_analyze({
+            "period": "billing_period",
+            "show_forecast": True,
+            "show_calendar": True,
+        })
+
+        self.assertEqual(result["summary"]["transfers"]["out"], 10000)
+        self.assertEqual(result["summary"]["balance"], -10000)
+        self.assertEqual(len(result["transfers"]), 1)
+        forecast_by_date = {point["date"]: point for point in result["forecast"]}
+        self.assertEqual(forecast_by_date["2026-07-20"]["planned_amount"], 10000)
+
+    def test_disabled_forecast_excludes_category_marker_from_plans_payment(self):
+        cache.CACHE.data["user"]["1"]["isForecastEnabled"] = False
+        cache.CACHE.data["reminder"] = {
+            "forecast-category-reminder": {
+                "id": "forecast-category-reminder",
+                "outcomeAccount": ACCOUNT_ID,
+                "incomeAccount": ACCOUNT_ID,
+                "outcomeInstrument": 1,
+                "incomeInstrument": 1,
+                "tag": [TAG_ID],
+            }
+        }
+        cache.CACHE.data["reminderMarker"] = {
+            "forecast-category-marker": {
+                "id": "forecast-category-marker",
+                "reminder": "forecast-category-reminder",
+                "date": "2026-07-20",
+                "state": "planned",
+                "isForecast": True,
+                "outcome": 80,
+                "income": 0,
+                "outcomeAccount": ACCOUNT_ID,
+                "incomeAccount": ACCOUNT_ID,
+                "outcomeInstrument": 1,
+                "incomeInstrument": 1,
+                "tag": [TAG_ID],
+            }
+        }
+
+        result = self._run_analyze({
+            "period": "billing_period",
+            "show_forecast": True,
+            "show_calendar": True,
+        })
+
+        self.assertEqual(result["summary"]["expense"]["planned"], 0)
+        self.assertEqual(result["summary"]["expense"]["for_balance"], 0)
+        self.assertEqual(result["calendar"], [])
+        self.assertTrue(all(point["planned_amount"] == 0 for point in result["forecast"]))
+
+    def test_forecast_marker_counts_when_user_forecast_is_enabled(self):
+        cache.CACHE.data["user"]["1"]["isForecastEnabled"] = True
+        cache.CACHE.data["reminder"] = {
+            "forecast-category-reminder": {
+                "id": "forecast-category-reminder",
+                "outcomeAccount": ACCOUNT_ID,
+                "incomeAccount": ACCOUNT_ID,
+                "outcomeInstrument": 1,
+                "incomeInstrument": 1,
+                "tag": [TAG_ID],
+            }
+        }
+        cache.CACHE.data["reminderMarker"] = {
+            "forecast-category-marker": {
+                "id": "forecast-category-marker",
+                "reminder": "forecast-category-reminder",
+                "date": "2026-07-20",
+                "state": "planned",
+                "isForecast": True,
+                "outcome": 80,
+                "income": 0,
+                "outcomeAccount": ACCOUNT_ID,
+                "incomeAccount": ACCOUNT_ID,
+                "outcomeInstrument": 1,
+                "incomeInstrument": 1,
+                "tag": [TAG_ID],
+            }
+        }
+
+        result = self._run_analyze({
+            "period": "billing_period",
+            "show_forecast": True,
+            "show_calendar": True,
+        })
+
+        self.assertEqual(result["summary"]["expense"]["planned"], 80)
+        self.assertEqual(result["summary"]["expense"]["for_balance"], 80)
+        self.assertEqual(result["summary"]["balance"], -80)
+        self.assertEqual(result["calendar"][0]["amount"], 80)
+
+    def test_forecast_budget_side_is_gated_by_user_forecast_setting(self):
+        cache.CACHE.data["user"]["1"]["isForecastEnabled"] = False
+        cache.CACHE.data["budget"] = {
+            "regular": {
+                "user": 1,
+                "date": "2026-07-01",
+                "tag": TAG_ID,
+                "income": 0,
+                "outcome": 1000,
+                "incomeLock": False,
+                "outcomeLock": False,
+                "isIncomeForecast": False,
+                "isOutcomeForecast": False,
+            },
+            "forecast": {
+                "user": 1,
+                "date": "2026-07-01",
+                "tag": TAG_ID,
+                "income": 0,
+                "outcome": 2000,
+                "incomeLock": False,
+                "outcomeLock": False,
+                "isIncomeForecast": False,
+                "isOutcomeForecast": True,
+            },
+        }
+
+        result = self._run_analyze({
+            "period": "billing_period",
+            "show_forecast": False,
+            "show_calendar": False,
+        })
+
+        self.assertEqual(result["summary"]["expense"]["category_budget"], 1000)
+        self.assertEqual(result["summary"]["expense"]["for_balance"], 1000)
+        self.assertEqual(result["summary"]["balance"], -1000)
+
+    def test_deleted_transfer_marker_does_not_count_as_fact_or_plan(self):
+        loan_account = "55555555-5555-5555-5555-555555555555"
+        cache.CACHE.data["account"][loan_account] = {
+            "id": loan_account,
+            "user": 1,
+            "instrument": 1,
+            "title": "Credit card",
+            "type": "ccard",
+            "balance": -5000,
+            "creditLimit": 100000,
+            "inBalance": False,
+            "archive": False,
+        }
+        cache.CACHE.data["reminder"] = {
+            "deleted-loan-reminder": {
+                "id": "deleted-loan-reminder",
+                "outcomeAccount": ACCOUNT_ID,
+                "incomeAccount": loan_account,
+                "outcomeInstrument": 1,
+                "incomeInstrument": 1,
+                "tag": [],
+            }
+        }
+        cache.CACHE.data["reminderMarker"] = {
+            "deleted-loan-marker": {
+                "id": "deleted-loan-marker",
+                "reminder": "deleted-loan-reminder",
+                "date": "2026-07-20",
+                "state": "deleted",
+                "outcome": 10000,
+                "income": 10000,
+                "outcomeAccount": ACCOUNT_ID,
+                "incomeAccount": loan_account,
+                "outcomeInstrument": 1,
+                "incomeInstrument": 1,
+                "tag": [],
+            }
+        }
+
+        result = self._run_analyze({
+            "period": "billing_period",
+            "show_forecast": True,
+            "show_calendar": True,
+        })
+
+        self.assertEqual(result["summary"]["transfers"]["out"], 0)
+        self.assertEqual(result["summary"]["balance"], 0)
+        self.assertEqual(result["transfers"], [])
+        self.assertEqual(result["calendar"], [])
+
     def test_preserves_category_when_parent_reference_is_missing(self):
         cache.CACHE.data["tag"] = {
             TAG_ID: {"id": TAG_ID, "title": "Food", "parent": MISSING_PARENT_ID},
