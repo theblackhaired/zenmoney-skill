@@ -109,6 +109,7 @@ For `get_transactions` and `get_analytics`, select exactly one form:
 | Баланс, счета | `get_accounts()` |
 | Расходы за период | `get_transactions(period="month", type="expense")` |
 | Аналитика расходов | `get_analytics(period="month", report="outcome", group_by="category", currency_mode="split")` |
+| Планы по категориям: план, свободно, перерасход | `analyze_budget_detailed(period="billing_period")` → `expenses[].plan`, `remaining`, `overspend` |
 | План/факт по категориям | `get_category_report(period="billing_period", direction="OUTCOME")` |
 | Денежный поток | `get_money_flow(period="month")` |
 | Доходы против расходов | `get_income_outcome_comparison(period="month")` |
@@ -144,7 +145,7 @@ python scripts/cli.py --call '{"tool":"get_analytics","arguments":{"start_date":
 2. `get_accounts` → UUID счёта
 3. `create_transaction` с type/amount/account_id/category_ids
 
-**Проверка бюджета:** `get_budgets` + `get_analytics` + `get_accounts` → остаток
+**Проверка строки экрана «Планы»:** `analyze_budget_detailed(period="billing_period")` → найди категорию в дереве `expenses`; используй `plan`, `remaining`, `overspend`. Поле `reserve_remaining` — внутренний резерв итоговой формулы, а не экранное «свободно».
 
 ## Analytics Semantics
 

@@ -180,6 +180,8 @@ If synced user preferences are unavailable, the report fails explicitly. A compl
 
 Plans calls require `period=billing_period`; use `period_offset=-1` for the previous plan period.
 
+Each expense-category row exposes the Plans display contract directly: `plan` is the denominator shown after “из”, `remaining` is the non-negative free amount, and `overspend` is the non-negative amount over plan. `reserve_remaining` is the separate internal tree reserve used by the overall balance formula; it can differ from a parent row's displayed free amount.
+
 Aggregate budgets use the sentinel category `ALL` / `ALL (aggregate)`, normalized to `00000000-0000-0000-0000-000000000000` in tool arguments and written with that zero UUID in the current budget write path.
 
 ## Reminder recurrence
