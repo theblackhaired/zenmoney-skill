@@ -5,15 +5,14 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from zenmoney import budget_tools, cache, config, tools, validation
-from zenmoney.instrument_rates import InstrumentRateCache
-from zenmoney.plans import render
+from zenmoney.errors import ApiRequestError, ToolError
 
 
 RUB = 1
@@ -49,7 +48,6 @@ def _budget(tag_id: str, month: str, outcome: int) -> dict:
 class PlansRenderIntegrationContractTests(unittest.TestCase):
     def setUp(self):
         cache.CACHE = cache.Cache()
-        render.RATE_CACHE = InstrumentRateCache()
         cache.CACHE.data["user"] = {"1": {"id": 1}}
         cache.CACHE.data["instrument"] = {
             str(RUB): {"id": RUB, "shortTitle": "RUB", "title": "Ruble", "rate": 1},
@@ -136,6 +134,258 @@ class PlansRenderIntegrationContractTests(unittest.TestCase):
         self.assertEqual(result["summary"]["opening_balance"]["total"], 8000)
         self.assertEqual(result["summary"]["exchange_difference"]["fact"], 1000)
         self.assertEqual(result["summary"]["balance"], 9000)
+        self.assertEqual(result["summary"]["rate_source"]["historical_rates"], "instrument_rates_api")
+
+    def test_unavailable_historical_rates_use_current_rate_with_provenance(self):
+        cache.CACHE.data["account"] = {
+            USD_ACCOUNT: {
+                "id": USD_ACCOUNT,
+                "user": 1,
+                "instrument": USD,
+                "title": "USD",
+                "type": "checking",
+                "balance": 100,
+                "inBalance": True,
+                "archive": False,
+            }
+        }
+
+        error = ApiRequestError(
+            endpoint="/instrument-rates/",
+            status_code=401,
+            message="ZenMoney API request failed with HTTP 401: /instrument-rates/",
+        )
+        with patch(
+            "zenmoney.instrument_rates.transport._api_post",
+            AsyncMock(side_effect=error),
+        ):
+            result = self._run(today="2026-05-10")
+
+        self.assertEqual(result["summary"]["opening_balance"]["total"], 7000)
+        self.assertEqual(result["summary"]["balance"], 7000)
+        self.assertEqual(result["summary"]["rate_source"]["historical_rates"], "current_instrument_rate_fallback")
+        self.assertEqual(result["metadata"]["instrument_rates"], {
+            "policy": "historical_then_current",
+            "request_status": "unavailable",
+            "requested_pairs": 1,
+            "requested_dates": 6,
+            "requested_points": 6,
+            "historical_points": 0,
+            "rows_received": 0,
+            "fallback": "current_instrument_rate",
+            "endpoint": "/instrument-rates/",
+            "status_code": 401,
+            "warning": (
+                "Historical instrument rates are unavailable; "
+                "current synced Instrument.rate values were used"
+            ),
+        })
+
+    def test_rate_fallback_does_not_hide_invalid_current_rate(self):
+        cache.CACHE.data["instrument"][str(USD)]["rate"] = 0
+        cache.CACHE.data["account"] = {
+            USD_ACCOUNT: {
+                "id": USD_ACCOUNT,
+                "user": 1,
+                "instrument": USD,
+                "title": "USD",
+                "type": "checking",
+                "balance": 100,
+                "inBalance": True,
+                "archive": False,
+            }
+        }
+
+        error = ApiRequestError(
+            endpoint="/instrument-rates/",
+            status_code=401,
+            message="ZenMoney API request failed with HTTP 401: /instrument-rates/",
+        )
+        with patch(
+            "zenmoney.instrument_rates.transport._api_post",
+            AsyncMock(side_effect=error),
+        ), self.assertRaises(ToolError) as caught:
+            self._run(today="2026-05-10")
+
+        self.assertEqual(caught.exception.code, "INVALID_INSTRUMENT_RATE")
+
+    def test_non_rate_endpoint_api_error_is_not_converted_to_current_rate_fallback(self):
+        cache.CACHE.data["account"] = {
+            USD_ACCOUNT: {
+                "id": USD_ACCOUNT,
+                "user": 1,
+                "instrument": USD,
+                "title": "USD",
+                "type": "checking",
+                "balance": 100,
+                "inBalance": True,
+                "archive": False,
+            }
+        }
+
+        error = ApiRequestError(endpoint="/v8/diff/", status_code=401)
+        with patch(
+            "zenmoney.instrument_rates.transport._api_post",
+            AsyncMock(side_effect=error),
+        ), self.assertRaises(ApiRequestError) as caught:
+            self._run(today="2026-05-10")
+
+        self.assertEqual(caught.exception.endpoint, "/v8/diff/")
+
+    def test_transient_rate_api_errors_use_current_rate_fallback(self):
+        for status_code in (None, 408, 425, 429, 500):
+            with self.subTest(status_code=status_code):
+                self.setUp()
+                cache.CACHE.data["account"] = {
+                    USD_ACCOUNT: {
+                        "id": USD_ACCOUNT,
+                        "user": 1,
+                        "instrument": USD,
+                        "title": "USD",
+                        "type": "checking",
+                        "balance": 100,
+                        "inBalance": True,
+                        "archive": False,
+                    }
+                }
+
+                error = ApiRequestError(endpoint="/instrument-rates/", status_code=status_code)
+                with patch(
+                    "zenmoney.instrument_rates.transport._api_post",
+                    AsyncMock(side_effect=error),
+                ):
+                    result = self._run(today="2026-05-10")
+
+                self.assertEqual(result["summary"]["opening_balance"]["total"], 7000)
+                self.assertEqual(result["metadata"]["instrument_rates"]["request_status"], "unavailable")
+                self.assertEqual(result["metadata"]["instrument_rates"]["status_code"], status_code)
+
+    def test_client_rate_api_errors_remain_fatal(self):
+        for status_code in (400, 403, 404):
+            with self.subTest(status_code=status_code):
+                self.setUp()
+                cache.CACHE.data["account"] = {
+                    USD_ACCOUNT: {
+                        "id": USD_ACCOUNT,
+                        "user": 1,
+                        "instrument": USD,
+                        "title": "USD",
+                        "type": "checking",
+                        "balance": 100,
+                        "inBalance": True,
+                        "archive": False,
+                    }
+                }
+
+                error = ApiRequestError(endpoint="/instrument-rates/", status_code=status_code)
+                with patch(
+                    "zenmoney.instrument_rates.transport._api_post",
+                    AsyncMock(side_effect=error),
+                ), self.assertRaises(ApiRequestError) as caught:
+                    self._run(today="2026-05-10")
+
+                self.assertEqual(caught.exception.status_code, status_code)
+
+    def test_empty_rate_response_does_not_reuse_stale_rate_cache(self):
+        cache.CACHE.data["account"] = {
+            USD_ACCOUNT: {
+                "id": USD_ACCOUNT,
+                "user": 1,
+                "instrument": USD,
+                "title": "USD",
+                "type": "checking",
+                "balance": 100,
+                "inBalance": True,
+                "archive": False,
+            }
+        }
+
+        async def full_historical_response(_path, payload):
+            rows = []
+            for predicate in payload["predicates"]:
+                current = datetime.date.fromisoformat(predicate["fromDate"])
+                end = datetime.date.fromisoformat(predicate["toDate"])
+                while current <= end:
+                    rows.append({
+                        "baseInstrument": int(predicate["baseInstrument"]),
+                        "quoteInstrument": int(predicate["quoteInstrument"]),
+                        "date": current.isoformat(),
+                        "rate": 90,
+                    })
+                    current += datetime.timedelta(days=1)
+            return rows
+
+        with patch(
+            "zenmoney.instrument_rates.transport._api_post",
+            side_effect=full_historical_response,
+        ):
+            historical_result = self._run(today="2026-05-10")
+
+        with patch(
+            "zenmoney.instrument_rates.transport._api_post",
+            AsyncMock(return_value=[]),
+        ):
+            result = self._run(today="2026-05-10")
+
+        self.assertEqual(historical_result["summary"]["opening_balance"]["total"], 9000)
+        self.assertEqual(result["summary"]["opening_balance"]["total"], 7000)
+        self.assertEqual(result["summary"]["rate_source"]["historical_rates"], "historical_with_current_fallback")
+        self.assertEqual(result["metadata"]["instrument_rates"]["request_status"], "partial")
+        self.assertEqual(result["metadata"]["instrument_rates"]["historical_points"], 0)
+        self.assertEqual(result["metadata"]["instrument_rates"]["rows_received"], 0)
+        self.assertIn("warning", result["metadata"]["instrument_rates"])
+
+    def test_partial_rate_response_reports_received_rows_and_uses_current_rate_for_missing_dates(self):
+        cache.CACHE.data["account"] = {
+            USD_ACCOUNT: {
+                "id": USD_ACCOUNT,
+                "user": 1,
+                "instrument": USD,
+                "title": "USD",
+                "type": "checking",
+                "balance": 100,
+                "inBalance": True,
+                "archive": False,
+            }
+        }
+        rows = [{
+            "baseInstrument": USD,
+            "quoteInstrument": RUB,
+            "date": "2026-05-10",
+            "rate": 90,
+        }]
+
+        with patch(
+            "zenmoney.instrument_rates.transport._api_post",
+            AsyncMock(return_value=rows),
+        ):
+            result = self._run(today="2026-05-10")
+
+        self.assertEqual(result["metadata"]["instrument_rates"]["rows_received"], 1)
+        self.assertEqual(result["metadata"]["instrument_rates"]["request_status"], "partial")
+        self.assertLess(
+            result["metadata"]["instrument_rates"]["historical_points"],
+            result["metadata"]["instrument_rates"]["requested_points"],
+        )
+        self.assertEqual(result["metadata"]["instrument_rates"]["fallback"], "current_instrument_rate_when_missing")
+
+    def test_single_currency_plans_skip_historical_rate_request(self):
+        api_post = AsyncMock()
+        with patch("zenmoney.instrument_rates.transport._api_post", api_post):
+            result = self._run(today="2026-05-10")
+
+        api_post.assert_not_awaited()
+        self.assertEqual(result["summary"]["rate_source"]["historical_rates"], "not_needed")
+        self.assertEqual(result["metadata"]["instrument_rates"], {
+            "policy": "historical_then_current",
+            "request_status": "not_required",
+            "requested_pairs": 0,
+            "requested_dates": 0,
+            "requested_points": 0,
+            "historical_points": 0,
+            "rows_received": 0,
+            "fallback": "none",
+        })
 
     def test_excluded_opening_is_not_reintroduced_by_exchange_difference(self):
         cache.CACHE.data["account"] = {
