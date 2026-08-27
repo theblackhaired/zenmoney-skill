@@ -100,8 +100,16 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
         budgets=budgets_raw,
         today=_today(),
     )
-    await prepare_historical_rates(ctx)
-    return json.dumps(render_analysis(ctx), ensure_ascii=False, indent=2)
+    prepared_rates = await prepare_historical_rates(ctx)
+    return json.dumps(
+        render_analysis(
+            ctx,
+            rate_cache=prepared_rates.cache,
+            rate_metadata=prepared_rates.metadata,
+        ),
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 async def tool_setup_budget_mode(args: dict) -> str:

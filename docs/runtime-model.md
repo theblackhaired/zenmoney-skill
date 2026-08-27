@@ -151,6 +151,8 @@ This means most read and write tools use cached state plus a best-effort refresh
 
 The advanced analytics handlers (`get_category_report`, `get_money_flow`, `get_income_outcome_comparison`, `get_balance_trend`) consume the refreshed cache after the normal prefetch. Category, comparison, and balance-series conversions fetch dated rates from `POST /instrument-rates/`; the synced current `Instrument.rate` is only the documented fallback. Balance history is reconstructed from current account balances by reversing synced transactions after each requested point, and the response exposes that provenance in metadata.
 
+Plans follows the same historical-then-current conversion policy. A successful `/v8/diff/` remains the authentication gate. If the auxiliary `/instrument-rates/` request returns `401`, is rate-limited, has a transient server/network failure, or returns incomplete dated rates, Plans continues only through validated synced `Instrument.rate` values and records coverage, endpoint status, fallback source, and a warning in `metadata.instrument_rates`. Contract failures such as `400`, `403`, and `404` remain fatal. A `401` from `/v8/diff/` remains `AUTHENTICATION_FAILED`; it is never reclassified as a rate fallback.
+
 `scripts/cli.py` enforces the token gate only for non-cache-only tools. `setup_budget_mode` can run without `ZENMONEY_TOKEN` or `config.json -> token`; live reads and writes cannot.
 
 ## Reminder recurrence

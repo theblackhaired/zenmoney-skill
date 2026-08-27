@@ -7,6 +7,7 @@ import httpx
 
 from . import config
 from . import cache as _cache
+from .errors import ApiRequestError, AuthenticationError
 
 
 _client: httpx.AsyncClient | None = None
@@ -64,17 +65,29 @@ async def _api_post(endpoint: str, body: dict) -> Any:
     if not config.TOKEN:
         raise RuntimeError("ZENMONEY_TOKEN is not set. Set env var or add to config.json")
     client = _get_client()
-    resp = await client.post(
-        f"{config.BASE_URL}{endpoint}",
-        json=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {config.TOKEN}",
-        },
-    )
+    try:
+        resp = await client.post(
+            f"{config.BASE_URL}{endpoint}",
+            json=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {config.TOKEN}",
+            },
+        )
+    except httpx.RequestError as exc:
+        raise ApiRequestError(
+            endpoint=endpoint,
+            status_code=None,
+            message=f"ZenMoney API request failed before receiving a response: {endpoint}",
+        ) from exc
     if resp.status_code == 401:
-        raise RuntimeError("Token expired (401). Get a new token from https://budgera.com/settings/export")
-    resp.raise_for_status()
+        if endpoint != "/instrument-rates/":
+            raise AuthenticationError(endpoint=endpoint)
+        raise ApiRequestError(endpoint=endpoint, status_code=401)
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise ApiRequestError(endpoint=endpoint, status_code=resp.status_code) from exc
     return resp.json()
 
 

@@ -147,6 +147,8 @@ python scripts/cli.py --call '{"tool":"get_analytics","arguments":{"start_date":
 
 **Проверка строки экрана «Планы»:** `analyze_budget_detailed(period="billing_period")` → найди категорию в дереве `expenses`; используй `plan`, `remaining`, `overspend`. Поле `reserve_remaining` — внутренний резерв итоговой формулы, а не экранное «свободно».
 
+Для данных экрана «Планы» используй только `analyze_budget_detailed`. Если вызов завершился ошибкой, остановись и сообщи её; не аппроксимируй поля Plans через `get_analytics`, `get_reminders`, `get_budgets` или их комбинацию. Если исторические `/instrument-rates/` недоступны, Plans использует синхронизированные текущие `Instrument.rate` и явно сообщает это в `metadata.instrument_rates`; невалидный текущий курс остаётся ошибкой.
+
 ## Analytics Semantics
 
 - `report` обязателен: `income`, `outcome` или `net`.
