@@ -147,7 +147,7 @@ python scripts/cli.py --call '{"tool":"get_analytics","arguments":{"start_date":
 
 **Проверка строки экрана «Планы»:** `analyze_budget_detailed(period="billing_period")` → найди категорию в дереве `expenses`; используй `plan`, `remaining`, `overspend`. Поле `reserve_remaining` — внутренний резерв итоговой формулы, а не экранное «свободно».
 
-Для данных экрана «Планы» используй только `analyze_budget_detailed`. Если вызов завершился ошибкой, остановись и сообщи её; не аппроксимируй поля Plans через `get_analytics`, `get_reminders`, `get_budgets` или их комбинацию. Если исторические `/instrument-rates/` недоступны, Plans использует синхронизированные текущие `Instrument.rate` и явно сообщает это в `metadata.instrument_rates`; невалидный текущий курс остаётся ошибкой.
+Для данных экрана «Планы» используй только `analyze_budget_detailed`. Если вызов завершился ошибкой, остановись и сообщи её; не аппроксимируй поля Plans через `get_analytics`, `get_reminders`, `get_budgets` или их комбинацию. Plans использует только текущие `Instrument.rate`, синхронизированные публичным `/v8/diff/`, и сообщает это в `metadata.currency_conversion`; невалидный текущий курс возвращает `INVALID_INSTRUMENT_RATE`. Исторические мультивалютные итоги могут отличаться от мобильного приложения, потому что документированный публичный API не отдаёт историю курсов; `exchange_difference` при этой политике не измеряет историческое движение курса и имеет нулевой числовой вклад.
 
 ## Analytics Semantics
 

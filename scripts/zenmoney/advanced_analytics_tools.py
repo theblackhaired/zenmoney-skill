@@ -12,14 +12,9 @@ from .analytics.category_difference import apply_category_difference
 from .analytics.category_report import render_category_report
 from .analytics.comparison import build_income_outcome_comparison
 from .analytics.money_flow import build_money_flow
+from .currency_conversion import CURRENT_RATE_METADATA, current_rate_converter
 from .domain import _today
 from .errors import InvalidArgumentError, UnsupportedCalculationError
-from .instrument_rates import (
-    InstrumentRateCache,
-    exchange_converter,
-    fetch_instrument_rates,
-    instrument_rate_predicate,
-)
 from .plans.opening import reconstruct_native_opening
 from .transfer_classifier import select_plan_user
 from .validation import validate_tool_args
@@ -34,7 +29,7 @@ async def tool_get_category_report(args: dict) -> str:
     args = validate_tool_args("get_category_report", args)
     bounds = _comparison_bounds(args, args["comparison_periods"])
     accounts = _account_perimeter(args)
-    convert, target = await _rate_context(bounds, accounts, args.get("currency"))
+    convert, target = _rate_context(args.get("currency"))
     difference_mode = args.get("difference_calculation_mode") or config._load_config().get(
         "difference_calculation_mode", "REFUNDS"
     )
@@ -79,6 +74,7 @@ async def tool_get_category_report(args: dict) -> str:
         "currency": _currency_code(target),
         "difference_calculation_mode": difference_mode,
         "comparison_periods": [periods.public_period(bound) for bound in bounds[1:]],
+        "metadata": {"currency_conversion": dict(CURRENT_RATE_METADATA)},
         **report,
     }
     return json.dumps(_jsonable(result), ensure_ascii=False)
@@ -110,7 +106,7 @@ async def tool_get_income_outcome_comparison(args: dict) -> str:
             "AVERAGE_VALUES is visible in ZenMoney, but its raw averaging formula is not confirmed"
         )
     accounts = _account_perimeter(args)
-    convert, target = await _rate_context(bounds, accounts, args.get("currency"))
+    convert, target = _rate_context(args.get("currency"))
     items = []
     for bound in bounds:
         income, outcome = _income_outcome_totals(bound, accounts, convert, target)
@@ -132,6 +128,7 @@ async def tool_get_income_outcome_comparison(args: dict) -> str:
         "period": periods.public_period(args["resolved_period"]),
         "currency": _currency_code(target),
         "account_scope": args["account_scope"],
+        "metadata": {"currency_conversion": dict(CURRENT_RATE_METADATA)},
         **report,
     }
     return json.dumps(_jsonable(result), ensure_ascii=False)
@@ -141,7 +138,7 @@ async def tool_get_balance_trend(args: dict) -> str:
     args = validate_tool_args("get_balance_trend", args)
     bound = args["resolved_period"]
     accounts = _account_perimeter(args)
-    convert, target = await _rate_context([bound], accounts, args.get("currency"))
+    convert, target = _rate_context(args.get("currency"))
     transactions = [tx for tx in _cache.CACHE.transactions() if not _is_deleted(tx)]
     relevant = _transactions_between(bound)
     point_dates = {
@@ -180,6 +177,7 @@ async def tool_get_balance_trend(args: dict) -> str:
     )
     report["period"] = periods.public_period(bound)
     report["metadata"]["history_source"] = "synced_transactions_reconstructed_from_current_balances"
+    report["metadata"]["currency_conversion"] = dict(CURRENT_RATE_METADATA)
     return json.dumps(_jsonable(report), ensure_ascii=False)
 
 
@@ -440,11 +438,7 @@ def _comparison_bounds(args: Mapping[str, Any], count: int) -> list[dict[str, An
     return result
 
 
-async def _rate_context(
-    bounds: list[Mapping[str, Any]],
-    accounts: Mapping[str, Mapping[str, Any]],
-    currency: Any,
-) -> tuple[Any, dict[str, Any]]:
+def _rate_context(currency: Any) -> tuple[Any, dict[str, Any]]:
     instruments = {
         str(item["id"]): dict(item)
         for item in _cache.CACHE.instruments()
@@ -452,30 +446,7 @@ async def _rate_context(
     }
     main = _main_instrument(instruments.values())
     target = _target_instrument(currency, instruments, main)
-    used = {
-        str(account["instrument"])
-        for account in accounts.values()
-        if account.get("inBalance") is True and account.get("instrument") is not None
-    }
-    used.add(str(target["id"]))
-    main_id = str(main["id"])
-    from_date = min(bound["start_date"] for bound in bounds)
-    to_date = max(bound["end_date"] for bound in bounds)
-    rate_cache = InstrumentRateCache()
-    predicates = [
-        instrument_rate_predicate(instrument_id, main_id, from_date=from_date, to_date=to_date)
-        for instrument_id in sorted(used)
-        if instrument_id != main_id
-    ]
-    await fetch_instrument_rates(predicates, cache=rate_cache)
-    return (
-        exchange_converter(
-            instruments=instruments.values(),
-            main_instrument_id=main_id,
-            cache=rate_cache,
-        ),
-        target,
-    )
+    return current_rate_converter(instruments.values()), target
 
 
 def _main_instrument(instruments: Iterable[Mapping[str, Any]]) -> dict[str, Any]:

@@ -81,9 +81,7 @@ async def _api_post(endpoint: str, body: dict) -> Any:
             message=f"ZenMoney API request failed before receiving a response: {endpoint}",
         ) from exc
     if resp.status_code == 401:
-        if endpoint != "/instrument-rates/":
-            raise AuthenticationError(endpoint=endpoint)
-        raise ApiRequestError(endpoint=endpoint, status_code=401)
+        raise AuthenticationError(endpoint=endpoint)
     try:
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
