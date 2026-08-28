@@ -4,7 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -27,13 +27,6 @@ def _budget_config() -> dict:
 
 class AnalyzeBudgetDetailedCurrencyAuditTests(unittest.TestCase):
     def setUp(self):
-        rate_patch = patch(
-            "zenmoney.instrument_rates.transport._api_post",
-            new_callable=AsyncMock,
-            return_value=[],
-        )
-        rate_patch.start()
-        self.addCleanup(rate_patch.stop)
         cache.CACHE = cache.Cache()
         cache.CACHE.data["instrument"] = {
             "1": {"id": 1, "shortTitle": "RUB", "title": "Russian Ruble", "rate": 1},
@@ -155,13 +148,6 @@ class AnalyzeBudgetDetailedCurrencyAuditTests(unittest.TestCase):
 
 class AnalyzeBudgetDetailedTransferAmountTests(unittest.TestCase):
     def setUp(self):
-        rate_patch = patch(
-            "zenmoney.instrument_rates.transport._api_post",
-            new_callable=AsyncMock,
-            return_value=[],
-        )
-        rate_patch.start()
-        self.addCleanup(rate_patch.stop)
         cache.CACHE = cache.Cache()
         cache.CACHE.data["user"] = {"1": {"id": 1}}
         cache.CACHE.data["instrument"] = {

@@ -2,19 +2,14 @@ from __future__ import annotations
 
 import datetime
 from collections import defaultdict
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from decimal import Decimal
 from typing import Any
 
 from .. import periods
 from ..analytics.category_difference import apply_category_difference
-from ..errors import ApiRequestError, InvalidArgumentError, ToolError, UnsupportedCalculationError
-from ..instrument_rates import (
-    InstrumentRateCache,
-    exchange_converter,
-    fetch_instrument_rates,
-    instrument_rate_predicate,
-)
+from ..errors import InvalidArgumentError, ToolError, UnsupportedCalculationError
+from ..currency_conversion import CURRENT_RATE_METADATA, current_rate_converter
 from ..transfer_classifier import BALANCE, classify_transfer_event, evaluate_plan_transfer
 from .categories import ALL_CATEGORIES_ID, UNCATEGORIZED_CATEGORY_ID, category_bucket
 from .context import PlansContext, resolve_previous_billing_period
@@ -29,132 +24,17 @@ from .reserve import calculate_row
 ZERO = Decimal(0)
 
 
-@dataclass(frozen=True)
-class PreparedHistoricalRates:
-    cache: InstrumentRateCache
-    metadata: dict[str, Any]
-
-
-def render_analysis(
-    ctx: PlansContext,
-    *,
-    rate_cache: InstrumentRateCache,
-    rate_metadata: dict[str, Any],
-) -> dict[str, Any]:
-    result = _jsonable(
-        _render_period(
-            ctx,
-            ctx.resolved_period,
-            rate_cache=rate_cache,
-            rate_metadata=rate_metadata,
-        )
-    )
-    result.setdefault("metadata", {})["instrument_rates"] = rate_metadata
-    return result
-
-
-async def prepare_historical_rates(ctx: PlansContext) -> PreparedHistoricalRates:
-    rate_cache = InstrumentRateCache()
-    target_id = str(_target_instrument(ctx))
-    dates = _conversion_dates(ctx)
-    instrument_ids = sorted(
-        instrument_id
-        for instrument_id in _used_instrument_ids(ctx)
-        if instrument_id != target_id and instrument_id in ctx.instruments
-    )
-    predicates = [
-        instrument_rate_predicate(
-            instrument_id,
-            target_id,
-            from_date=dates[0],
-            to_date=dates[-1],
-        )
-        for instrument_id in instrument_ids
-    ]
-    metadata: dict[str, Any] = {
-        "policy": "historical_then_current",
-        "request_status": "not_required",
-        "requested_pairs": len(predicates),
-        "requested_dates": len(dates) if predicates else 0,
-        "requested_points": len(predicates) * len(dates),
-        "historical_points": 0,
-        "rows_received": 0,
-        "fallback": "none",
-    }
-    if not predicates:
-        return PreparedHistoricalRates(rate_cache, metadata)
-    try:
-        rows = await fetch_instrument_rates(predicates, cache=rate_cache)
-    except ApiRequestError as exc:
-        if not _can_fallback_to_current_rates(exc):
-            raise
-        metadata.update({
-            "request_status": "unavailable",
-            "fallback": "current_instrument_rate",
-            "endpoint": exc.endpoint,
-            "status_code": exc.status_code,
-            "warning": (
-                "Historical instrument rates are unavailable; "
-                "current synced Instrument.rate values were used"
-            ),
-        })
-        return PreparedHistoricalRates(rate_cache, metadata)
-
-    historical_points = sum(
-        rate_cache.get(
-            predicate["baseInstrument"],
-            predicate["quoteInstrument"],
-            on_date,
-        )
-        is not None
-        for predicate in predicates
-        for on_date in dates
-    )
-    requested_points = metadata["requested_points"]
-    metadata.update({
-        "request_status": (
-            "success" if historical_points == requested_points else "partial"
-        ),
-        "historical_points": historical_points,
-        "rows_received": len(rows),
-        "fallback": (
-            "none"
-            if historical_points == requested_points
-            else "current_instrument_rate_when_missing"
-        ),
-    })
-    if historical_points != requested_points:
-        metadata.update({
-            "fallback_reason": "historical_rates_incomplete",
-            "warning": (
-                "Historical instrument rates are incomplete; current synced "
-                "Instrument.rate values were used for missing dates"
-            ),
-        })
-    return PreparedHistoricalRates(rate_cache, metadata)
-
-
-def _can_fallback_to_current_rates(exc: ApiRequestError) -> bool:
-    if exc.endpoint != "/instrument-rates/":
-        return False
-    return (
-        exc.status_code is None
-        or exc.status_code == 401
-        or exc.status_code in {408, 425, 429}
-        or exc.status_code >= 500
-    )
+def render_analysis(ctx: PlansContext) -> dict[str, Any]:
+    return _jsonable(_render_period(ctx, ctx.resolved_period))
 
 
 def _render_period(
     ctx: PlansContext,
     resolved_period: dict[str, Any],
-    *,
-    rate_cache: InstrumentRateCache,
-    rate_metadata: dict[str, Any],
 ) -> dict[str, Any]:
     period_ctx = replace(ctx, budgets=_budgets_for_period(ctx, resolved_period))
     target_instrument = _target_instrument(ctx)
-    convert = _converter(ctx, target_instrument, rate_cache)
+    convert = _converter(ctx)
     events = _period_events(ctx, resolved_period["start_date"], resolved_period["end_date"])
     rows, calendar = _category_rows(period_ctx, events, convert, target_instrument)
     roots = tuple(calculate_row(row) for row in _roots(rows))
@@ -169,8 +49,6 @@ def _render_period(
         resolved_period,
         convert,
         target_instrument,
-        rate_cache,
-        rate_metadata,
     )
     exchange = _exchange_difference(
         ctx,
@@ -198,7 +76,7 @@ def _render_period(
         "plan_balance_mode": ctx.plan_balance_mode,
         "plan_settings": sorted(ctx.plan_settings),
         "difference_calculation_mode": ctx.difference_calculation_mode,
-        "rate_source": _summary_rate_source(rate_metadata),
+        "rate_source": dict(CURRENT_RATE_METADATA),
         "budget_mode_label": (
             "Баланс vs Расходы" if ctx.plan_balance_mode == BALANCE else "Доходы vs Расходы"
         ),
@@ -232,6 +110,7 @@ def _render_period(
 
     result: dict[str, Any] = {
         "summary": summary,
+        "metadata": {"currency_conversion": dict(CURRENT_RATE_METADATA)},
         "income": sorted(
             (_row_json(row, "income") for row in roots if _active(row.income)),
             key=lambda item: item["actual"] + item["residue"],
@@ -697,8 +576,6 @@ def _opening(
     resolved_period: dict[str, Any],
     convert: Any,
     target_instrument: Any,
-    rate_cache: InstrumentRateCache,
-    rate_metadata: dict[str, Any],
 ) -> dict[str, Any]:
     def previous_day_summary(
         _day: str,
@@ -714,12 +591,7 @@ def _opening(
             resolved_period=previous,
             args={**ctx.args, "show_forecast": False, "show_calendar": False},
         )
-        previous_balance = _render_period(
-            previous_ctx,
-            previous,
-            rate_cache=rate_cache,
-            rate_metadata=rate_metadata,
-        )["summary"]["balance"]
+        previous_balance = _render_period(previous_ctx, previous)["summary"]["balance"]
         amount = Decimal(str(previous_balance))
         return {
             "balance": {
@@ -1048,16 +920,8 @@ def _target_instrument(ctx: PlansContext) -> Any:
     )
 
 
-def _converter(
-    ctx: PlansContext,
-    target_instrument: Any,
-    rate_cache: InstrumentRateCache,
-):
-    return exchange_converter(
-        instruments=ctx.instruments.values(),
-        main_instrument_id=target_instrument,
-        cache=rate_cache,
-    )
+def _converter(ctx: PlansContext):
+    return current_rate_converter(ctx.instruments.values())
 
 
 def _account_in_balance(ctx: PlansContext, account_id: Any) -> bool:
@@ -1202,64 +1066,6 @@ def _exchange_facts(ctx: PlansContext) -> tuple[list[dict[str, Any]], list[dict[
 def _budgets_for_period(ctx: PlansContext, resolved_period: dict[str, Any]) -> list[dict[str, Any]]:
     month_date = resolved_period["budget_month_anchor"]
     return [budget for budget in ctx.budgets if budget.get("month") == month_date]
-
-
-def _summary_rate_source(rate_metadata: dict[str, Any]) -> dict[str, Any]:
-    status = rate_metadata.get("request_status")
-    if status == "not_required":
-        historical_rates = "not_needed"
-    elif status == "success":
-        historical_rates = "instrument_rates_api"
-    elif status == "partial":
-        historical_rates = "historical_with_current_fallback"
-    elif status == "unavailable":
-        historical_rates = "current_instrument_rate_fallback"
-    else:
-        historical_rates = "unknown"
-    result = {"historical_rates": historical_rates}
-    for field in ("fallback_reason", "endpoint", "status_code", "warning"):
-        if field in rate_metadata:
-            result[field] = rate_metadata[field]
-    if status == "unavailable":
-        result.setdefault("fallback_reason", "instrument_rates_unavailable")
-    return result
-
-
-def _conversion_dates(ctx: PlansContext) -> list[str]:
-    dates = {ctx.today}
-    for resolved in (ctx.resolved_period, resolve_previous_billing_period(ctx)):
-        dates.add(resolved["start_date"])
-        dates.add(resolved["end_date"])
-        period_end = datetime.date.fromisoformat(resolved["end_date"])
-        dates.add((period_end + datetime.timedelta(days=1)).isoformat())
-    for transaction in ctx.transactions:
-        if transaction.get("date"):
-            dates.add(str(transaction["date"]))
-    for marker in ctx.markers:
-        if marker.get("date"):
-            dates.add(str(marker["date"]))
-    return sorted(dates)
-
-
-def _used_instrument_ids(ctx: PlansContext) -> set[str]:
-    instrument_ids = {
-        str(account.get("instrument"))
-        for account in ctx.accounts.values()
-        if account.get("instrument") is not None and account.get("inBalance") is True
-    }
-    for transaction in ctx.transactions:
-        for field in ("incomeInstrument", "outcomeInstrument"):
-            if transaction.get(field) is not None:
-                instrument_ids.add(str(transaction[field]))
-    for reminder in ctx.reminders:
-        for field in ("incomeInstrument", "outcomeInstrument"):
-            if reminder.get(field) is not None:
-                instrument_ids.add(str(reminder[field]))
-    for marker in ctx.markers:
-        for field in ("incomeInstrument", "outcomeInstrument"):
-            if marker.get(field) is not None:
-                instrument_ids.add(str(marker[field]))
-    return instrument_ids
 
 
 def _category_name(bucket: CategoryBucket) -> str:

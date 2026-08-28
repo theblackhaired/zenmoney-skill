@@ -47,26 +47,25 @@ class TransportHttpContractTests(unittest.TestCase):
         self.assertEqual(caught.exception.endpoint, "/v8/diff/")
         self.assertEqual(caught.exception.status_code, 401)
 
-    def test_instrument_rates_401_is_endpoint_failure_not_expired_token(self):
-        with self.assertRaises(ApiRequestError) as caught:
-            self._call("/instrument-rates/", 401)
+    def test_any_401_is_authentication_failure(self):
+        with self.assertRaises(AuthenticationError) as caught:
+            self._call("/some/endpoint/", 401)
 
-        self.assertEqual(caught.exception.code, "API_REQUEST_FAILED")
-        self.assertEqual(caught.exception.endpoint, "/instrument-rates/")
+        self.assertEqual(caught.exception.code, "AUTHENTICATION_FAILED")
+        self.assertEqual(caught.exception.endpoint, "/some/endpoint/")
         self.assertEqual(caught.exception.status_code, 401)
-        self.assertNotIn("expired", str(caught.exception).lower())
 
     def test_network_failure_preserves_endpoint_without_auth_reclassification(self):
         client = AsyncMock()
-        request = httpx.Request("POST", "https://api.zenmoney.ru/instrument-rates/")
+        request = httpx.Request("POST", "https://api.zenmoney.ru/v8/diff/")
         client.post.side_effect = httpx.ConnectError("network down", request=request)
         with patch.object(config, "TOKEN", "test-token"), \
              patch.object(transport, "_get_client", return_value=client), \
              self.assertRaises(ApiRequestError) as caught:
-            asyncio.run(transport._api_post("/instrument-rates/", {}))
+            asyncio.run(transport._api_post("/v8/diff/", {}))
 
         self.assertEqual(caught.exception.code, "API_REQUEST_FAILED")
-        self.assertEqual(caught.exception.endpoint, "/instrument-rates/")
+        self.assertEqual(caught.exception.endpoint, "/v8/diff/")
         self.assertIsNone(caught.exception.status_code)
 
 

@@ -89,7 +89,7 @@ Billing days 29-31 follow Android 26.6: when the requested day does not exist, t
 - Money-movement totals are not part of `get_analytics` until a separate money-movement contract exists.
 - Full Analytics output contract: [docs/plans-analytics-parity.md](docs/plans-analytics-parity.md).
 
-The four advanced reports reuse the same strict period and account-perimeter contracts. They convert monetary values with historical `/instrument-rates/` data and use current instrument rates only as an explicit fallback. `get_category_report` supports `REFUNDS`, `INCOME_OUTCOME_AND_REFUNDS`, and `NONE`; the saved mode defaults to `REFUNDS`. `AVERAGE_VALUES` in the income/outcome comparison fails explicitly for ranges longer than 31 days while the APK formula remains unconfirmed.
+The four advanced reports reuse the same strict period and account-perimeter contracts. Currency conversion uses the current `Instrument.rate` values delivered by the public `/v8/diff/` API; the skill does not call private application endpoints. `get_category_report` supports `REFUNDS`, `INCOME_OUTCOME_AND_REFUNDS`, and `NONE`; the saved mode defaults to `REFUNDS`. `AVERAGE_VALUES` in the income/outcome comparison fails explicitly for ranges longer than 31 days while the APK formula remains unconfirmed.
 
 ## Setup
 
@@ -180,7 +180,7 @@ If synced user preferences are unavailable, the report fails explicitly. A compl
 
 Plans calls require `period=billing_period`; use `period_offset=-1` for the previous plan period.
 
-Plans prefers dated `/instrument-rates/` values. If that auxiliary endpoint returns `401`, is rate-limited, has a transient server/network failure, or returns incomplete dated rates after the normal `/v8/diff/` sync succeeds, the report uses synced current `Instrument.rate` values for the missing conversions and exposes coverage and fallback details in `metadata.instrument_rates`. Contract failures such as `400`, `403`, and `404`, plus invalid or missing current rates, still fail explicitly; Plans values must not be approximated with Analytics, reminders, or raw budgets.
+Plans converts currencies only with the current `Instrument.rate` values from the public `/v8/diff/` response and reports this policy in `metadata.currency_conversion`. Historical exchange rates are not available through the documented public API, so past multi-currency totals can differ from the mobile application and `exchange_difference` cannot measure historical FX movement (its numeric contribution is zero under the current-rate policy). Invalid or missing current rates fail explicitly with `INVALID_INSTRUMENT_RATE`; Plans values must not be approximated with Analytics, reminders, or raw budgets.
 
 Each expense-category row exposes the Plans display contract directly: `plan` is the denominator shown after “из”, `remaining` is the non-negative free amount, and `overspend` is the non-negative amount over plan. `reserve_remaining` is the separate internal tree reserve used by the overall balance formula; it can differ from a parent row's displayed free amount.
 

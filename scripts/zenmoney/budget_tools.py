@@ -14,7 +14,7 @@ from .domain import (
 )
 from .errors import EntityNotFoundError, InvalidArgumentError
 from .plans.context import build_context
-from .plans.render import prepare_historical_rates, render_analysis
+from .plans.render import render_analysis
 from .transfer_classifier import (
     BALANCE,
     PUBLIC_MODE_TO_ZM,
@@ -100,13 +100,8 @@ async def tool_analyze_budget_detailed(args: dict) -> str:
         budgets=budgets_raw,
         today=_today(),
     )
-    prepared_rates = await prepare_historical_rates(ctx)
     return json.dumps(
-        render_analysis(
-            ctx,
-            rate_cache=prepared_rates.cache,
-            rate_metadata=prepared_rates.metadata,
-        ),
+        render_analysis(ctx),
         ensure_ascii=False,
         indent=2,
     )
