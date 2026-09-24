@@ -90,27 +90,6 @@ class BudgetUserIsolationTests(unittest.TestCase):
                 self.assertEqual(target.server_timestamp, 1)
                 self.assertEqual(target.data["budget"], {})
 
-    def test_cache_load_rejects_budget_without_user(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            cache_path = Path(temp_dir) / ".cache.json"
-            cache_path.write_text(
-                json.dumps({
-                    "serverTimestamp": 1,
-                    "budget": [{
-                        "tag": TAG_ID,
-                        "date": MONTH_DATE,
-                        "outcome": 100,
-                    }],
-                }),
-                encoding="utf-8",
-            )
-
-            loaded = cache.Cache()
-            with patch.object(config, "CACHE_PATH", cache_path), \
-                 self.assertRaisesRegex(ValueError, "missing required field: user"):
-                loaded.load()
-
-        self.assertEqual(loaded.data["budget"], {})
 
     def test_get_budgets_returns_only_configured_plan_user(self):
         for budget in (_budget(1, 100), _budget(2, 200)):

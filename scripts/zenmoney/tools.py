@@ -396,3 +396,7 @@ def _get_sync_policy(name: str) -> SyncPolicy:
 
 async def _run_tool(name: str, args: dict) -> str:
     return await _dispatch.run_tool(name, args, TOOLS, _migrate_account_meta)
+
+
+async def _run_tool_fresh(name: str, args: dict) -> str:
+    return await _dispatch.run_tool_fresh(name, args, TOOLS)

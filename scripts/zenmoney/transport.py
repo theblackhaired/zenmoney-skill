@@ -90,18 +90,18 @@ async def _api_post(endpoint: str, body: dict) -> Any:
 
 
 async def _sync(extra: dict | None = None) -> dict:
-    """Incremental or full sync via /v8/diff/."""
+    """Fetch a full live snapshot via /v8/diff/."""
     force_fetch = extra.get("forceFetch") if extra else None
     body: dict[str, Any] = {
         "currentClientTimestamp": int(time.time()),
         # A non-zero cursor makes ZenMoney return an incremental diff even
         # when forceFetch is present. Store replacement requires a full sync.
-        "serverTimestamp": 0 if force_fetch else _cache.CACHE.server_timestamp,
+        "serverTimestamp": 0,
     }
     if extra:
         body.update(extra)
     diff = await _api_post("/v8/diff/", body)
-    _apply_and_save_diff(diff, force_fetch=force_fetch)
+    _apply_received_diff(diff, force_fetch=force_fetch or _cache._ENTITY_KEYS)
     return diff
 
 
@@ -113,23 +113,14 @@ async def _write_diff(changes: dict) -> dict:
     }
     body.update(changes)
     diff = await _api_post("/v8/diff/", body)
-    _apply_and_save_diff(diff)
+    _apply_received_diff(diff)
     verification = await _verify_written_changes(changes)
     _confirm_written_changes(changes, verification)
     return diff
 
 
-def _apply_and_save_diff(diff: dict[str, Any], *, force_fetch: list[str] | None = None) -> None:
-    try:
-        _apply_diff_to_cache(diff, force_fetch=force_fetch)
-        _cache.CACHE.save()
-    except config.LostUpdateError:
-        _cache.CACHE.load()
-        diff_timestamp = diff.get("serverTimestamp")
-        if diff_timestamp is not None and int(diff_timestamp or 0) < _cache.CACHE.server_timestamp:
-            return
-        _apply_diff_to_cache(diff, force_fetch=force_fetch)
-        _cache.CACHE.save()
+def _apply_received_diff(diff: dict[str, Any], *, force_fetch: list[str] | None = None) -> None:
+    _apply_diff_to_cache(diff, force_fetch=force_fetch)
 
 
 def _apply_diff_to_cache(diff: dict[str, Any], *, force_fetch: list[str] | None = None) -> None:
@@ -267,7 +258,7 @@ def _still_present_deletions(changes: dict[str, Any], verification: dict[str, An
             }
         )
         if verified_absent and _cache.CACHE.get(str(obj_type), obj_id) is not None:
-            _apply_and_save_diff({"deletion": [item]})
+            _apply_received_diff({"deletion": [item]})
         if not verified_deleted and not verified_absent and _cache.CACHE.get(str(obj_type), obj_id) is not None:
             still_present.append({"object": str(obj_type), "id": obj_id})
     return still_present

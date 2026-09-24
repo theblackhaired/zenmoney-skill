@@ -1,4 +1,5 @@
 import asyncio
+from copy import deepcopy
 import json
 import sys
 import tempfile
@@ -10,6 +11,16 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from zenmoney import budget_tools, cache, config, dispatch, tools, validation
+
+def _mock_fresh_sync():
+    data = deepcopy(cache.CACHE.data)
+
+    async def sync():
+        cache.CACHE.data = deepcopy(data)
+        return {}
+
+    return AsyncMock(side_effect=sync)
+
 
 
 ACCOUNT_ID = "11111111-1111-1111-1111-111111111111"
@@ -74,8 +85,7 @@ class BudgetEdgeContractTests(unittest.TestCase):
             config_path.write_text(json.dumps(_budget_config()), encoding="utf-8")
 
             with patch.object(budget_tools, "_cfg_path", config_path), \
-                 patch.object(cache.CACHE, "load", lambda: None), \
-                 patch.object(dispatch, "_sync", AsyncMock(return_value=None)), \
+                 patch.object(dispatch, "_sync", _mock_fresh_sync()), \
                  patch.object(dispatch, "_close_client", AsyncMock(return_value=None)), \
                  patch.object(tools, "_migrate_account_meta", lambda: None), \
                  patch.object(validation, "_today", return_value="2026-07-15"), \
@@ -116,8 +126,7 @@ class BudgetEdgeContractTests(unittest.TestCase):
             config_path.write_text(json.dumps(config_payload), encoding="utf-8")
 
             with patch.object(budget_tools, "_cfg_path", config_path), \
-                 patch.object(cache.CACHE, "load", lambda: None), \
-                 patch.object(dispatch, "_sync", AsyncMock(return_value=None)), \
+                 patch.object(dispatch, "_sync", _mock_fresh_sync()), \
                  patch.object(dispatch, "_close_client", AsyncMock(return_value=None)), \
                  patch.object(tools, "_migrate_account_meta", lambda: None), \
                  patch.object(validation, "_today", return_value="2026-07-15"), \

@@ -1,2 +1,5 @@
 httpx[socks]>=0.28,<1
 python-dateutil>=2.9,<3
+mcp==2.2.0
+PyJWT[crypto]>=2.10,<3
+uvicorn>=0.30,<1

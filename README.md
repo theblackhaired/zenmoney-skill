@@ -1,221 +1,64 @@
-# ZenMoney Skill
+# zenmoney-mcp
 
-Script-based CLI skill for personal finance management through the ZenMoney API.
+Самостоятельный MCP-сервер для ZenMoney. Он переносит 28 инструментов `zenmoney-skill` с прежними именами и финансовым ядром. MCP вызывает Python-обработчики напрямую; старый CLI не поставляется. План и критерии — [MIGRATION_PLAN.md](MIGRATION_PLAN.md).
 
-The skill currently exposes 28 tools for accounts, transactions, Plans, budgets, reminders, analytics, and ML suggestions.
+## Поведение
 
-## How it works
+- Локально: `stdio`. Удалённо: защищённый Streamable HTTP `/mcp` за HTTPS.
+- Каждый инструмент, которому нужны данные, получает свежий полный снимок через публичный `POST /v8/diff/` с `serverTimestamp: 0`. Между вызовами финансовые сущности не хранятся; `.cache.json` не читается и не записывается.
+- Правила Plans, Analytics, периодов, валют, бюджетов и напоминаний сохранены. Запись проверяется повторной серверной загрузкой затронутых сущностей.
+- Объёмные чтения по умолчанию используют `response_mode=compact`; `response_mode=full` возвращает исходный полный JSON. Сокращается только ответ модели, не расчёт и не запрос к ZenMoney. Ошибки всегда полные.
+- Изменяющие инструменты требуют `confirm_write=true`; удалённо также нужны `finance:read` и `finance:write`.
 
-The agent runner reads the repository-root `SKILL.md` and invokes the CLI:
+## Установка и локальный запуск
 
-```bash
-python scripts/cli.py --list
-python scripts/cli.py --describe get_transactions
-python scripts/cli.py --call '{"tool":"get_accounts","arguments":{}}'
-python scripts/cli.py --call '{"tool":"get_analytics","arguments":{"period":"month","report":"outcome","group_by":"category","currency_mode":"split"}}'
-```
-
-PowerShell:
+Нужен Python 3.10+.
 
 ```powershell
-$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-'{"tool":"get_accounts","arguments":{}}' | python scripts/cli.py --call -
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+$env:ZENMONEY_STATE_DIR = Join-Path $env:LOCALAPPDATA 'zenmoney-mcp'
+$env:ZENMONEY_TOKEN = '<your token>'
+.\.venv\Scripts\python.exe -m zenmoney_mcp
 ```
 
-For automated PowerShell calls containing non-ASCII values, serialize JSON with ASCII Unicode escapes (`ensure_ascii=True`, producing `\uXXXX`). This protects the payload even when the automation host mangles the command text before PowerShell starts.
+`ZENMONEY_STATE_DIR` содержит приватный `config.json` с локальными настройками (`billing_period_start_day`, `plan_user_id`, `accounts_meta` и другие). По умолчанию MCP использует `%LOCALAPPDATA%\zenmoney-mcp` на Windows либо `$XDG_DATA_HOME/zenmoney-mcp` / `~/.local/share/zenmoney-mcp` в POSIX. Старый каталог skill можно временно указать как каталог настроек: MCP не использует его `.cache.json`. Токен ищется сначала в `ZENMONEY_TOKEN`, затем в `config.json` как совместимый резервный источник. Для Codex/Claude Desktop задайте команду интерпретатора из `.venv` и абсолютный путь к `run_stdio.py` аргументом. Этот запуск работает из любого каталога. Секреты передавайте только через environment или приватный каталог настроек.
 
-Windows notes:
+## Удалённый вход для ChatGPT Web и Claude Web
 
-- `python` is the supported launcher in this checkout.
-- If you prefer the Windows launcher, `py -3 scripts/cli.py ...` is equivalent.
-- If your environment only exposes `python3`, substitute it manually.
-
-## Tools (28)
-
-**Read:**
-- `get_accounts` - list accounts with balances
-- `get_transactions` - query by date, account, category, type, limit, and offset
-- `get_categories` - category tree
-- `get_instruments` - currencies and rates
-- `get_budgets` - monthly budget limits
-- `analyze_budget_detailed` - detailed budget analysis with `balance_vs_expense` and `income_vs_expense`
-- `get_reminders` - scheduled payments and markers
-- `get_analytics` - income, outcome, and net aggregations
-- `get_category_report` - category/payee report with budget or historical-mean comparison and ZenMoney difference modes
-- `get_money_flow` - income/outcome flow, residue, overspending, and weights by native currency
-- `get_income_outcome_comparison` - selected and preceding period comparison
-- `get_balance_trend` - reconstructed historical balance trend for the selected account perimeter
-- `suggest` - ML category and merchant suggestions
-- `get_merchants` - merchant search
-- `check_auth_status` - verify token validity
-
-**Write:**
-- `create_transaction`, `update_transaction`, `delete_transaction`
-- `create_account`
-- `setup_budget_mode`
-- `create_budget`, `update_budget`, `delete_budget`
-- `create_reminder`, `update_reminder`, `delete_reminder`
-- `create_reminder_marker`, `delete_reminder_marker`
-
-## Period contract
-
-Read/report tools (`get_transactions`, `get_analytics`, and the four advanced analytics reports) accept exactly one period selector:
-
-- named `period=billing_period|week|month|year` with integer `period_offset` (`0` current, `-1` previous);
-- or an exact custom range with both inclusive `start_date` and `end_date`.
-
-`period=week` requires `first_weekday=0..6` (`0` Monday). Plans accepts only `period=billing_period`, matching the mobile Plans surface. Old magic values and incomplete date ranges are rejected; there is no second shorthand resolver.
-
-Billing days 29-31 follow Android 26.6: when the requested day does not exist, the boundary is day 1 of the next month. Internal ranges are half-open; public `end_date` is inclusive. `Budget.date` remains the first day of the logical calendar month even when its billing boundary rolls into the next month.
-
-## Analytics contract
-
-`get_analytics` uses a breaking explicit report contract:
-
-- `report` is required: `income`, `outcome`, or `net`.
-- A named period or complete custom range is required; the response echoes resolved boundaries.
-- `group_by` is optional: `category` by default; also accepts `account` or `merchant`.
-- `currency_mode` is optional: `split` by default; also accepts `scalar`.
-- `account_scope` is optional: `in_balance` by default; also accepts `all` or `selected` with `account_ids`.
-- `category_scope` is optional: `all` by default; `selected` requires `category_ids` and may use `category_role=primary|additional|any`.
-- `merchant_scope` is optional: `all` by default; `selected` requires at least one of `merchant_ids` or `payees`.
-- `tag_policy` is `primary_tag`.
-- `currency_conversion` is `none`.
-- `transfers` are `excluded`.
-- `unknown_currency` is `separate_bucket`.
-- Output field names use `snake_case`.
-- Stable group keys are prefixed: `category:`, `account:`, `merchant:`; merchant grouping uses `payee:` only when a transaction has no merchant ID.
-- Filter dimensions combine with AND; values inside one selected dimension combine with OR. Empty selected lists are invalid, unknown entity IDs return `ENTITY_NOT_FOUND`, and unknown arguments or singular aliases are rejected.
-- Money-movement totals are not part of `get_analytics` until a separate money-movement contract exists.
-- Full Analytics output contract: [docs/plans-analytics-parity.md](docs/plans-analytics-parity.md).
-
-The four advanced reports reuse the same strict period and account-perimeter contracts. Currency conversion uses the current `Instrument.rate` values delivered by the public `/v8/diff/` API; the skill does not call private application endpoints. `get_category_report` supports `REFUNDS`, `INCOME_OUTCOME_AND_REFUNDS`, and `NONE`; the saved mode defaults to `REFUNDS`. `AVERAGE_VALUES` in the income/outcome comparison fails explicitly for ranges longer than 31 days while the APK formula remains unconfirmed.
-
-## Setup
-
-### Requirements
-
-- Python 3.10+ because the current code uses PEP 604 `|` type unions
-- Python packages from `requirements.txt`:
-  - `httpx` for ZenMoney HTTP calls
-  - `python-dateutil` for month/year reminder recurrence
-
-Install:
-
-```bash
-python -m pip install -r requirements.txt
-```
-
-### Token Source
-
-Prefer the `ZENMONEY_TOKEN` environment variable. `config.json` is only a fallback when the env var is unset.
-
-PowerShell:
+Нужен публично достижимый HTTPS URL вида `https://finance.example/mcp` либо HTTPS reverse proxy к приватному серверу. Внутренний HTTP-процесс:
 
 ```powershell
-$env:ZENMONEY_TOKEN = "your-zenmoney-access-token"
+.\.venv\Scripts\python.exe -m uvicorn zenmoney_mcp.remote:create_app --factory --host 127.0.0.1 --port 8000
 ```
 
-Bash:
+| Переменная | Назначение |
+|---|---|
+| `ZENMONEY_TOKEN` | Токен ZenMoney только на сервере |
+| `ZENMONEY_STATE_DIR` | Приватный каталог `config.json` |
+| `ZENMONEY_MCP_RESOURCE` | Точный публичный HTTPS URL `/mcp`, он же JWT audience |
+| `ZENMONEY_OAUTH_ISSUER` | HTTPS issuer внешнего OAuth-провайдера |
+| `ZENMONEY_OAUTH_JWKS_URL` | JWKS endpoint провайдера |
+| `ZENMONEY_OAUTH_SUBJECT` | Единственный разрешённый `sub` владельца профиля |
 
-```bash
-export ZENMONEY_TOKEN="your-zenmoney-access-token"
+Remote-сервер является OAuth resource server, но не authorization server. Внешний провайдер должен поддерживать Authorization Code + PKCE S256, discovery, CIMD или DCR (либо заранее зарегистрированные клиенты), redirect URI для ChatGPT и Claude, refresh tokens и подписанные JWT access tokens с точными `iss`, `aud`, `sub` и scopes. Поддерживаются RS256/ES256. MCP публикует Protected Resource Metadata и возвращает `WWW-Authenticate` при отказе. До настройки провайдера и публичного адреса подключение веб-клиентов не проверено. Локальный `stdio` не использует OAuth. ZenMoney-токен не передаётся клиентам.
+
+## Развёртывание на budget.theblackhaired.ru
+
+Файлы в [deploy](deploy/) рассчитаны на Debian 13: Keycloak 26.7.4 с отдельным PostgreSQL в Docker Compose, MCP как systemd-служба от `kgorosov`, nginx и сертификат Let's Encrypt. Публичные адреса: `https://budget.theblackhaired.ru/mcp` и issuer `https://budget.theblackhaired.ru/auth/realms/budget`. Keycloak слушает только `127.0.0.1:8081`, MCP — только `127.0.0.1:8769`; PostgreSQL не публикует порт. Нужны DNS A-запись на сервер, доступные извне TCP 80/443 и установленные Docker Compose, nginx, certbot с его nginx/webroot поддержкой и Python 3.10+.
+
+1. Разместите код в `/home/kgorosov/apps/zenmoney-mcp/current`, создайте `.venv` и установите `requirements.txt`. Секреты, `config.json` и снимки счетов в каталог кода не копируйте.
+2. На сервере от имени `kgorosov` задайте `ZENMONEY_IDP_ENV_FILE=/home/kgorosov/apps/zenmoney-mcp/private/keycloak.env` и выполните `python3 deploy/generate_env.py`, затем `docker compose --env-file "$ZENMONEY_IDP_ENV_FILE" -f deploy/compose.yaml config --quiet` и `docker compose --env-file "$ZENMONEY_IDP_ENV_FILE" -f deploy/compose.yaml up -d`. Генератор создаёт файл один раз с правами `0600` и не показывает пароли. Храните его вне каталога релиза; резервную копию базы и учётных данных храните отдельно от исходников.
+3. Подготовьте приватный каталог и параметры службы: `sudo install -d -m 0700 /etc/zenmoney-mcp`; `sudo install -m 0600 deploy/server.env.template /etc/zenmoney-mcp/server.env`; `sudo install -d -o kgorosov -g kgorosov -m 0700 /var/lib/zenmoney-mcp`; `sudoedit /etc/zenmoney-mcp/server.env`. Добавьте серверный `ZENMONEY_TOKEN` либо положите приватный `config.json` в `/var/lib/zenmoney-mcp` с владельцем `kgorosov` и правами `0600`. Установите unit командой `sudo install -m 0644 deploy/zenmoney-mcp.service /etc/systemd/system/zenmoney-mcp.service`, затем `sudo systemctl daemon-reload` и `sudo systemd-analyze verify zenmoney-mcp.service`. Запустите службу после создания пользователя Keycloak и задания его `sub`.
+4. Для первой выдачи сертификата: `sudo install -d -m 0755 /var/www/letsencrypt/.well-known/acme-challenge`; `sudo install -m 0644 deploy/nginx.bootstrap.conf /etc/nginx/sites-available/budget.theblackhaired.ru`; `sudo ln -s /etc/nginx/sites-available/budget.theblackhaired.ru /etc/nginx/sites-enabled/budget.theblackhaired.ru`; проверьте `sudo nginx -t`, перезагрузите nginx. Затем выполните `sudo certbot certonly --webroot -w /var/www/letsencrypt -d budget.theblackhaired.ru`. После выдачи установите `deploy/nginx.https.conf` на то же место, снова выполните `sudo nginx -t` и `sudo systemctl reload nginx`. Установите hook `sudo install -m 0755 deploy/reload-nginx-on-renew.sh /etc/letsencrypt/renewal-hooks/deploy/reload-nginx-on-renew.sh` и проверьте продление через `sudo certbot renew --dry-run`. Не заменяйте действующий vhost, пока не проверены его текущие маршруты.
+5. Подготовьте точные HTTPS redirect URI, показанные ChatGPT Web и Claude Web при добавлении удалённого MCP. Скрипт `deploy/bootstrap_realm.py` требует `CHATGPT_REDIRECT_URIS` и `CLAUDE_REDIRECT_URIS` как JSON-массивы без wildcard, `BUDGET_USERNAME`, начальный `BUDGET_PASSWORD` длиной не менее 16 символов, `CHATGPT_CLIENT_SECRET` и `CLAUDE_CLIENT_SECRET` длиной не менее 32 символов, а также пароль администратора Keycloak. На сервере можно загрузить переменные из приватных файлов без вывода в терминал: `. "$ZENMONEY_IDP_ENV_FILE"; . /home/kgorosov/apps/zenmoney-mcp/private/client-secrets.env; export KC_ADMIN_PASSWORD="$KEYCLOAK_ADMIN_PASSWORD" KC_ADMIN_USERNAME=admin`; задайте остальные переменные через безопасный ввод и запустите `python3 deploy/bootstrap_realm.py`. Скрипт создаёт realm `budget`, пользователя с обязательной сменой начального пароля, два конфиденциальных клиента `budget-chatgpt` и `budget-claude` с Authorization Code и PKCE S256, scopes `finance:read`/`finance:write` и mapper точного JWT `aud=https://budget.theblackhaired.ru/mcp`. Для DCR он разрешает только callback-домены `chatgpt.com`, `claude.ai`, `claude.com`, сохраняет проверку адресов клиента и ограничение числа регистраций. Его JSON-вывод содержит `owner_sub`: задайте его как `ZENMONEY_OAUTH_SUBJECT` в `/etc/zenmoney-mcp/server.env`, затем выполните `sudo systemctl enable --now zenmoney-mcp.service`. Уберите временные секреты из shell через `unset KC_ADMIN_PASSWORD KEYCLOAK_ADMIN_PASSWORD KEYCLOAK_DB_PASSWORD BUDGET_PASSWORD CHATGPT_CLIENT_SECRET CLAUDE_CLIENT_SECRET`. Keycloak не поддерживает OAuth `resource` из RFC 8707; для этого одного MCP используется фиксированный audience, а вход проверяется реальным подключением.
+6. Проверка без финансовой записи: `curl -i https://budget.theblackhaired.ru/.well-known/oauth-protected-resource/mcp` должен вернуть адрес MCP и issuer, `curl -i https://budget.theblackhaired.ru/mcp` без токена — `401` с `WWW-Authenticate`, а `https://budget.theblackhaired.ru/auth/realms/budget/.well-known/openid-configuration` — discovery с правильным issuer. Затем проверьте вход и только читающий инструмент в каждом веб-клиенте. Изменяющие инструменты требуют scope `finance:write` и `confirm_write=true`; не используйте их для проверки развёртывания.
+
+## Проверки
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Resolution order in `scripts/zenmoney/config.py`:
-
-1. `ZENMONEY_TOKEN`
-2. `config.json` -> `token`
-
-If both are present, the environment variable wins.
-
-`setup_budget_mode` is cache-only and may run without a token because it only updates local config. Live reads and writes still require `ZENMONEY_TOKEN` or `config.json -> token`.
-
-### Configuration
-
-Create `config.json` in the project root for non-secret settings:
-
-```json
-{
-  "billing_period_start_day": 20,
-  "budget_mode": "income_vs_expense",
-  "round_balance_to_integer": true
-}
-```
-
-Optional fallback if you cannot inject environment variables:
-
-```json
-{
-  "token": "your-zenmoney-access-token"
-}
-```
-
-Configuration options:
-
-- `token` - optional fallback token source; prefer `ZENMONEY_TOKEN`
-- `billing_period_start_day` - required for `period=billing_period`; integer 1..31; missing days roll to day 1 of the next month
-- `budget_mode` - optional local override: `balance_vs_expense` or `income_vs_expense`; otherwise the synced ZenMoney user mode is used
-- `plan_user_id` - required only when a family sync contains multiple users and the Plans preference owner cannot be selected unambiguously
-- `plan_settings_override` - optional explicit list of ZenMoney `PlanSetting` values; otherwise synced `user.planSettings` is used
-- `difference_calculation_mode` - optional `REFUNDS`, `INCOME_OUTCOME_AND_REFUNDS`, or `NONE`; defaults to `REFUNDS`, while balance mode forces `NONE`
-- `round_balance_to_integer` - rounds forecast and balance output to integer rubles
-- `accounts_meta` - user-maintained account descriptions merged into budget analysis output
-
-### Getting a token
-
-- [zerro.app](https://zerro.app) - authorize with ZenMoney and extract the token from browser storage
-- [budgera.com/settings/export](https://budgera.com/settings/export) - copy the API token
-
-## Budget analysis modes
-
-`analyze_budget_detailed` supports the two current Plans UI modes:
-
-- `income_vs_expense` - `EXCLUDE_OPENING_BALANCE` plus the eight synced directed transfer exclusions
-- `balance_vs_expense` - `BALANCE`; includes opening balance and every transfer that crosses the balance perimeter
-
-By default the skill reads `user.planBalanceMode` and JSON-encoded `user.planSettings` from the normal `/v8/diff/` cache. You can switch modes locally with `setup_budget_mode` or `config.json`; no guessed per-mode dictionaries are used. The old `BUDGET_LIMIT` SmartBudget formula fails explicitly until its conflicting APK branches have a dedicated contract.
-
-If synced user preferences are unavailable, the report fails explicitly. A complete offline override for `income_vs_expense` therefore needs both `budget_mode` and `plan_settings_override`; `balance_vs_expense` has no active transfer exclusions.
-
-Plans calls require `period=billing_period`; use `period_offset=-1` for the previous plan period.
-
-Plans converts currencies only with the current `Instrument.rate` values from the public `/v8/diff/` response and reports this policy in `metadata.currency_conversion`. Historical exchange rates are not available through the documented public API, so past multi-currency totals can differ from the mobile application and `exchange_difference` cannot measure historical FX movement (its numeric contribution is zero under the current-rate policy). Invalid or missing current rates fail explicitly with `INVALID_INSTRUMENT_RATE`; Plans values must not be approximated with Analytics, reminders, or raw budgets.
-
-Each expense-category row exposes the Plans display contract directly: `plan` is the denominator shown after “из”, `remaining` is the non-negative free amount, and `overspend` is the non-negative amount over plan. `reserve_remaining` is the separate internal tree reserve used by the overall balance formula; it can differ from a parent row's displayed free amount.
-
-Aggregate budgets use the sentinel category `ALL` / `ALL (aggregate)`, normalized to `00000000-0000-0000-0000-000000000000` in tool arguments and written with that zero UUID in the current budget write path.
-
-## Reminder recurrence
-
-`create_reminder` and `update_reminder` use `interval`, `step`, and optional `points` to generate markers:
-
-- `step` must be positive.
-- `points` are recurrence offsets and each value must satisfy `0 <= point < step`.
-- For monthly and yearly reminders, the day of month comes from `start_date`; month ends are clamped to the real last day.
-- Omit `points` to use `[0]`, meaning one marker at each base occurrence.
-
-## Runtime model
-
-- The CLI persists a file-backed entity cache in `.cache.json`.
-- ZenMoney sync is diff-based via `POST /v8/diff/`, tracked with `serverTimestamp`.
-- Most tools load the cache and prefetch a fresh sync before execution.
-- Writes are server-confirmed: after posting changes, the runtime force-fetches changed entity types from `serverTimestamp: 0` and fails if the expected entity fields or deletion state are not present on the server.
-- Cache/config writes use file locks and atomic replace; stale cache saves raise `LOST_UPDATE` instead of overwriting newer state.
-- `check_auth_status` and `suggest` force live sync.
-- `setup_budget_mode` is cache-only because it only updates local config.
-
-More detail: [docs/runtime-model.md](docs/runtime-model.md)
-
-## Architecture
-
-- `SKILL.md` - agent-facing usage and routing guide
-- `scripts/cli.py` - CLI entrypoint for `--list`, `--describe`, and `--call`
-- `scripts/zenmoney/config.py` - config loading and token resolution
-- `scripts/zenmoney/validation.py` - argument validation
-- `scripts/zenmoney/tools.py` - tool registry, handlers, and sync policy
-- `scripts/zenmoney/cache.py` - local diff cache persistence and derived indexes
-
-## License
-
-MIT
+Тесты используют искусственные финансовые сущности и ключи OAuth, без реальных записей в ZenMoney. Источники: [MCP](https://modelcontextprotocol.io/specification/2026-07-28), [Python SDK v2](https://py.sdk.modelcontextprotocol.io/), [OpenAI OAuth](https://developers.openai.com/plugins/build/auth), [Claude remote MCP](https://claude.com/docs/connectors/building/authentication).

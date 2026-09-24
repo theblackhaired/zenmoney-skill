@@ -1,4 +1,5 @@
 import asyncio
+from copy import deepcopy
 import json
 import sys
 import unittest
@@ -9,6 +10,16 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from zenmoney import cache, dispatch, tools
+
+def _mock_fresh_sync():
+    data = deepcopy(cache.CACHE.data)
+
+    async def sync():
+        cache.CACHE.data = deepcopy(data)
+        return {}
+
+    return AsyncMock(side_effect=sync)
+
 
 
 RUB_ACCOUNT_ID = "11111111-1111-1111-1111-111111111111"
@@ -43,10 +54,9 @@ def _call_analytics(args: dict) -> dict:
 
 
 def _run_analytics(args: dict) -> dict:
-    mock_sync = AsyncMock(return_value=None)
+    mock_sync = _mock_fresh_sync()
     mock_close = AsyncMock(return_value=None)
-    with patch.object(cache.CACHE, "load", lambda: None), \
-         patch.object(dispatch, "_sync", mock_sync), \
+    with patch.object(dispatch, "_sync", mock_sync), \
          patch.object(dispatch, "_close_client", mock_close), \
          patch.object(tools, "_migrate_account_meta", lambda: None):
         return json.loads(asyncio.run(tools._run_tool("get_analytics", args)))

@@ -6,7 +6,7 @@ from . import config
 
 
 # ---------------------------------------------------------------------------
-# Cache (file-backed)
+# Per-call in-memory API snapshot
 # ---------------------------------------------------------------------------
 _ENTITY_KEYS = [
     "instrument", "account", "tag", "merchant",
@@ -18,61 +18,17 @@ _NUMERIC_ID_KEYS = {"instrument", "user", "country", "company"}
 
 
 class Cache:
-    """File-backed ZenMoney entity cache with incremental sync."""
+    """In-memory ZenMoney entities, discarded after each tool call."""
 
     def __init__(self) -> None:
         self._reset()
 
     def _reset(self) -> None:
         self.server_timestamp: int = 0
-        self._base_server_timestamp: int = 0
         # entity_name -> {id_str: entity_dict}
         self.data: dict[str, dict[str, Any]] = {k: {} for k in _ENTITY_KEYS}
         self.data["deletion"] = {}
         self._tags_by_id_cache: dict[str, dict[str, Any]] | None = None
-
-    # -- persistence --------------------------------------------------------
-
-    def load(self) -> None:
-        with config.state_file_lock(config.CACHE_PATH):
-            self._reset()
-            raw = config.read_json_state(config.CACHE_PATH)
-            self.server_timestamp = int(raw.get("serverTimestamp", 0) or 0)
-            self._base_server_timestamp = self.server_timestamp
-            for key in _ENTITY_KEYS:
-                arr = raw.get(key, [])
-                if isinstance(arr, dict):
-                    arr = list(arr.values())
-                elif not isinstance(arr, list):
-                    arr = []
-                store: dict[str, Any] = {}
-                for item in arr:
-                    if not isinstance(item, dict):
-                        continue
-                    if key == "budget":
-                        bk = self._budget_key(item)
-                        store[bk] = item
-                    else:
-                        store[str(item.get("id", ""))] = item
-                self.data[key] = store
-            self._invalidate_tag_indexes()
-
-    def save(self) -> None:
-        out: dict[str, Any] = {"serverTimestamp": self.server_timestamp}
-        for key in _ENTITY_KEYS:
-            out[key] = list(self.data[key].values())
-        with config.state_file_lock(config.CACHE_PATH):
-            disk = config.read_json_state(config.CACHE_PATH)
-            disk_timestamp = int(disk.get("serverTimestamp", 0) or 0)
-            if disk_timestamp != self._base_server_timestamp:
-                raise config.LostUpdateError(
-                    config.CACHE_PATH,
-                    self.server_timestamp,
-                    disk_timestamp,
-                    self._base_server_timestamp,
-                )
-            config.write_json_state_atomic(config.CACHE_PATH, out)
-            self._base_server_timestamp = self.server_timestamp
 
     # -- apply diff ---------------------------------------------------------
 
@@ -130,7 +86,10 @@ class Cache:
             return
         diff_timestamp = int(diff["serverTimestamp"] or 0)
         if diff_timestamp < self.server_timestamp:
-            raise config.LostUpdateError(config.CACHE_PATH, diff_timestamp, self.server_timestamp)
+            raise config.StateStoreError(
+                "LOST_UPDATE", "Server snapshot timestamp moved backwards",
+                {"current_serverTimestamp": self.server_timestamp, "response_serverTimestamp": diff_timestamp},
+            )
         self.server_timestamp = diff_timestamp
 
     def _store_from_items(self, key: str, items: Any) -> dict[str, Any]:

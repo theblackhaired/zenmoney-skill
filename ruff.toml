@@ -1,3 +1,2 @@
 [lint.per-file-ignores]
-"scripts/cli.py" = ["E402"]
 "tests/*.py" = ["E402"]

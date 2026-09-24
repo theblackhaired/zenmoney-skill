@@ -390,8 +390,7 @@ class DirtyCacheFixtureTests(unittest.TestCase):
     def _load_fixture_cache(self) -> cache.Cache:
         loaded_cache = cache.Cache()
         fixture_path = FIXTURES / "dirty_cache.json"
-        with patch.object(config, "CACHE_PATH", fixture_path):
-            loaded_cache.load()
+        loaded_cache.apply_diff(json.loads(fixture_path.read_text(encoding="utf-8")))
         cache.CACHE = loaded_cache
         return loaded_cache
 

@@ -8,9 +8,13 @@ from typing import Any
 
 from .. import periods
 from ..analytics.category_difference import apply_category_difference
-from ..errors import InvalidArgumentError, ToolError, UnsupportedCalculationError
 from ..currency_conversion import CURRENT_RATE_METADATA, current_rate_converter
-from ..transfer_classifier import BALANCE, classify_transfer_event, evaluate_plan_transfer
+from ..errors import InvalidArgumentError, ToolError, UnsupportedCalculationError
+from ..transfer_classifier import (
+    BALANCE,
+    classify_transfer_event,
+    evaluate_plan_transfer,
+)
 from .categories import ALL_CATEGORIES_ID, UNCATEGORIZED_CATEGORY_ID, category_bucket
 from .context import PlansContext, resolve_previous_billing_period
 from .events import event_from_reminder_marker, event_from_transaction
@@ -19,7 +23,6 @@ from .forecast import build_daily_forecast
 from .models import CategoryBucket, PlanCategoryRow, PlanEvent, PlanRowSide
 from .opening import reconstruct_native_opening, resolve_opening_balance
 from .reserve import calculate_row
-
 
 ZERO = Decimal(0)
 
@@ -438,8 +441,8 @@ def _transfers(
     remaining_out = ZERO
     remaining_in = ZERO
     result = []
-    # The context keeps every nondeleted cached transaction, so exact marker links
-    # suppress this fallback across periods; deleted links intentionally do not.
+    # The context keeps all nondeleted transactions, so exact marker links
+    # suppress duplicate transfer effects across periods as well.
     linked_marker_ids = {
         str(transaction["reminderMarker"])
         for transaction in ctx.transactions
@@ -460,6 +463,26 @@ def _transfers(
             plan_balance_mode=ctx.plan_balance_mode,
             plan_settings=ctx.plan_settings,
         )
+        if (
+            event.source_type == "reminder_marker"
+            and event.marker_state == "processed"
+            and event.source_id in linked_marker_ids
+        ):
+            # Keep the row for inspection, but its linked transaction owns the fact.
+            result.append({**evaluated, "effects": [], "net": ZERO})
+            continue
+        residual_effect = _internal_transfer_residual(event, ctx)
+        if residual_effect is not None:
+            evaluated = {
+                **evaluated,
+                "effects": [residual_effect],
+                "net": (
+                    residual_effect["amount"]
+                    if residual_effect["kind"] == "income"
+                    else -residual_effect["amount"]
+                ),
+                "reason": "same_currency_internal_transfer_residual",
+            }
         fallback_effect = _unlinked_processed_marker_fallback(
             event, evaluated, ctx, linked_marker_ids
         )
@@ -489,7 +512,7 @@ def _transfers(
                     flows["expense_facts"].append(
                         {
                             "instrument": event.outcome_side.currency,
-                            "amount": event.outcome_side.amount,
+                            "amount": effect["amount"],
                             "date": event.date,
                         }
                     )
@@ -503,7 +526,7 @@ def _transfers(
                     flows["income_facts"].append(
                         {
                             "instrument": event.income_side.currency,
-                            "amount": event.income_side.amount,
+                            "amount": effect["amount"],
                             "date": event.date,
                         }
                     )
@@ -542,6 +565,32 @@ def _transfers(
         },
         flows,
     )
+
+
+def _internal_transfer_residual(
+    event: PlanEvent,
+    ctx: PlansContext,
+) -> dict[str, Any] | None:
+    """Count the actual net change within a same-currency balance perimeter."""
+    outcome = event.outcome_side
+    income = event.income_side
+    if (
+        event.source_type != "transaction"
+        or outcome is None
+        or income is None
+        or not outcome.in_balance
+        or not income.in_balance
+        or outcome.currency != income.currency
+    ):
+        return None
+    residual = outcome.amount - income.amount
+    if not residual:
+        return None
+    return {
+        "kind": "expense" if residual > ZERO else "income",
+        "amount": abs(residual),
+        "currency": _currency_title(ctx, outcome.currency),
+    }
 
 
 def _unlinked_processed_marker_fallback(

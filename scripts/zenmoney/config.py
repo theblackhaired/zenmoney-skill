@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import Any, Iterator
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-_cfg_path = ROOT / "config.json"
+STATE_DIR = Path(os.environ.get("ZENMONEY_STATE_DIR") or ROOT).expanduser()
+_cfg_path = STATE_DIR / "config.json"
 TOKEN_ENV_VAR = "ZENMONEY_TOKEN"
-CACHE_PATH = ROOT / ".cache.json"
 BASE_URL = "https://api.zenmoney.ru"
 
 
@@ -40,28 +40,6 @@ class CorruptStateError(StateStoreError):
             "CORRUPT_STATE",
             f"State file is not valid JSON: {path}",
             {"path": str(path), "reason": reason},
-        )
-
-
-class LostUpdateError(StateStoreError):
-    def __init__(
-        self,
-        path: Path,
-        current_timestamp: int,
-        disk_timestamp: int,
-        expected_timestamp: int | None = None,
-    ):
-        details: dict[str, Any] = {
-            "path": str(path),
-            "current_serverTimestamp": current_timestamp,
-            "disk_serverTimestamp": disk_timestamp,
-        }
-        if expected_timestamp is not None:
-            details["expected_serverTimestamp"] = expected_timestamp
-        super().__init__(
-            "LOST_UPDATE",
-            "Refusing to overwrite newer ZenMoney cache state",
-            details,
         )
 
 

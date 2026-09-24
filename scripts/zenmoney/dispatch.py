@@ -58,37 +58,50 @@ async def run_tool(
     tools: dict[str, Callable[[dict], Awaitable[str]]],
     migrate_account_meta: Callable[[], None],
 ) -> str:
+    """Compatibility entry point using the same fresh runtime as MCP."""
+    return await run_tool_fresh(name, args, tools)
+
+
+async def run_tool_fresh(
+    name: str,
+    args: dict,
+    tools: dict[str, Callable[[dict], Awaitable[str]]],
+) -> str:
+    """Run a serialized MCP call with an isolated, memory-only API snapshot.
+
+    The MCP adapter must serialize calls because the existing handlers share
+    the module-level snapshot and HTTP client. No legacy state migration runs.
+    """
+    previous_cache = _cache.CACHE
+    snapshot = _cache.Cache()
+    _cache.CACHE = snapshot
     try:
         handler = tools.get(name)
-        if not handler:
+        if handler is None:
             return json.dumps({
                 "status": "error",
                 "code": "UNKNOWN_TOOL",
-                "error": f"Unknown tool: {name}. Use --list to see available tools.",
+                "error": f"Unknown tool: {name}",
             }, ensure_ascii=False)
-        sync_policy = get_sync_policy(name)
-        if sync_policy != SYNC_POLICY_CACHE_ONLY:
-            _cache.CACHE.load()
-        migrate_account_meta()
+        needs_snapshot = get_sync_policy(name) == SYNC_POLICY_PREFETCH_SYNC
         did_prefetch_sync = False
         try:
             validated_args = validate_tool_args(name, args)
         except Exception as exc:
-            if sync_policy == SYNC_POLICY_PREFETCH_SYNC and _is_cache_dependent_validation_error(exc):
+            if needs_snapshot and _is_cache_dependent_validation_error(exc):
                 await _sync()
                 did_prefetch_sync = True
                 validated_args = validate_tool_args(name, args)
             else:
                 raise
-        if sync_policy == SYNC_POLICY_PREFETCH_SYNC and not did_prefetch_sync:
+        if needs_snapshot and not did_prefetch_sync:
             await _sync()
-            # Syntax validation intentionally happens before network access, but
-            # entity existence must be checked against the cache produced by
-            # the prefetch. Revalidate the original arguments so the internal
-            # validated marker cannot preserve stale cache-dependent results.
             validated_args = validate_tool_args(name, args)
         return await handler(validated_args)
     except Exception as exc:
         return json.dumps(_error_payload(exc), ensure_ascii=False)
     finally:
+        # Dispose of financial data even if cancellation interrupts close.
+        snapshot._reset()
+        _cache.CACHE = previous_cache
         await _close_client()
