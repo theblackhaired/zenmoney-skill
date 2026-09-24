@@ -313,8 +313,9 @@ def bootstrap(api, env, clients):
             )
         else:
             api.request("POST", path + "/protocol-mappers/models", mapper)
-        # Newly registered DCR clients inherit these optional scopes. Preserve
-        # the realm's existing defaults and never grant finance scopes by default.
+        # DCR clients may inherit these optional scopes. A registration request
+        # with an explicit scope list can narrow that set; Claude Web currently
+        # requests finance:read only. Never grant finance scopes by default.
         api.request(
             "PUT",
             realm_path + "/default-optional-client-scopes/" + quote(scope_id, safe=""),

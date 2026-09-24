@@ -1,0 +1,10 @@
+[Unit]
+Description=Reconcile Claude Web OAuth scopes for ZenMoney MCP
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/kgorosov/apps/zenmoney-mcp/current
+EnvironmentFile=/home/kgorosov/apps/zenmoney-mcp/private/keycloak.env
+ExecStart=/usr/bin/python3 /home/kgorosov/apps/zenmoney-mcp/current/deploy/reconcile_claude_dcr_scopes.py
+UMask=0077
+NoNewPrivileges=true

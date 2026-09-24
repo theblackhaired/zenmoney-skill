@@ -1,0 +1,11 @@
+[Unit]
+Description=Keep Claude Web OAuth scopes available for ZenMoney MCP
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=1min
+AccuracySec=10s
+Unit=zenmoney-mcp-claude-scopes.service
+
+[Install]
+WantedBy=timers.target
