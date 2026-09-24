@@ -13,6 +13,24 @@ from .auth import READ_SCOPE, WRITE_SCOPE, AuthSettings, InvalidToken, TokenVeri
 MAX_BODY_SIZE = 1024 * 1024
 
 
+def _tool_listing_with_security_schemes(body: bytes) -> bytes:
+    """Mirror tool auth metadata into the ChatGPT extension of tools/list."""
+    try:
+        payload = json.loads(body)
+        tools = payload["result"]["tools"]
+        if not isinstance(tools, list):
+            return body
+        changed = False
+        for tool in tools:
+            schemes = (tool.get("_meta") or {}).get("securitySchemes")
+            if schemes:
+                tool["securitySchemes"] = schemes
+                changed = True
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode() if changed else body
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return body
+
+
 class ProtectedMCP:
     def __init__(self, app, settings: AuthSettings, read_tools: frozenset[str], verifier=None):
         self.app = app
@@ -28,6 +46,35 @@ class ProtectedMCP:
                 f'error="{error}", scope="{required}"'
             )
         await JSONResponse({"error": error}, status_code=status, headers=headers)(scope, receive, send)
+
+    async def _send_tool_listing(self, scope, receive, send):
+        start = None
+        chunks = []
+
+        async def send_listing(message):
+            nonlocal start
+            if message["type"] == "http.response.start":
+                start = message
+                return
+            if message["type"] != "http.response.body":
+                await send(message)
+                return
+            chunks.append(message.get("body", b""))
+            if message.get("more_body", False):
+                return
+            body = b"".join(chunks)
+            if start is not None:
+                headers = start.get("headers", [])
+                is_json = any(key.lower() == b"content-type" and b"application/json" in value.lower()
+                              for key, value in headers)
+                if start["status"] == 200 and is_json:
+                    body = _tool_listing_with_security_schemes(body)
+                headers = [(key, value) for key, value in headers if key.lower() != b"content-length"]
+                headers.append((b"content-length", str(len(body)).encode("ascii")))
+                await send({**start, "headers": headers})
+            await send({**message, "body": body})
+
+        await self.app(scope, receive, send_listing)
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "lifespan":
@@ -94,6 +141,8 @@ class ProtectedMCP:
                     return {"type": "http.request", "body": bytes(body), "more_body": False}
                 return await receive()
 
+            if request.get("method") == "tools/list":
+                return await self._send_tool_listing(scope, replay, send)
             return await self.app(scope, replay, send)
         return await self.app(scope, receive, send)
 

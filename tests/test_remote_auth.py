@@ -10,6 +10,7 @@ from starlette.responses import JSONResponse
 from starlette.testclient import TestClient
 
 from zenmoney_mcp.auth import AuthSettings, TokenVerifier
+from zenmoney_mcp.catalog import WRITE_TOOLS
 from zenmoney_mcp.remote import ProtectedMCP, create_app
 
 
@@ -171,6 +172,13 @@ class RemoteAuthTests(unittest.TestCase):
             self.assertEqual(len(names), 28)
             self.assertIn("get_accounts", names)
             self.assertIn("create_transaction", names)
+            for tool in response.json()["result"]["tools"]:
+                scopes = ["finance:read"]
+                if tool["name"] in WRITE_TOOLS:
+                    scopes.append("finance:write")
+                scheme = [{"type": "oauth2", "scopes": scopes}]
+                self.assertEqual(tool["securitySchemes"], scheme, tool["name"])
+                self.assertEqual(tool["_meta"]["securitySchemes"], scheme, tool["name"])
             # A successful request does not create an authorization bypass session.
             self.assertEqual(client.post("/mcp", json=listing).status_code, 401)
 

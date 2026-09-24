@@ -10,6 +10,8 @@ from pathlib import Path
 
 from mcp.types import Tool, ToolAnnotations
 
+from .auth import READ_SCOPE, WRITE_SCOPE
+
 _SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 
 
@@ -203,6 +205,10 @@ def build_tools() -> list[Tool]:
             name=name,
             description=doc["desc"],
             inputSchema=schema,
+            _meta={"securitySchemes": [{
+                "type": "oauth2",
+                "scopes": [READ_SCOPE, WRITE_SCOPE] if is_write else [READ_SCOPE],
+            }]},
             annotations=ToolAnnotations(
                 readOnlyHint=not is_write,
                 destructiveHint=is_write and name.startswith("delete_"),

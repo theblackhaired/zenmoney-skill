@@ -105,6 +105,16 @@ class CatalogTests(unittest.TestCase):
                 self.assertIn("confirm_write", tool.input_schema["required"])
                 self.assertTrue(tool.input_schema["properties"]["confirm_write"]["const"])
 
+    def test_tool_security_schemes_match_required_scopes(self):
+        for tool in TOOLS:
+            scopes = ["finance:read"]
+            if tool.name in WRITE_TOOLS:
+                scopes.append("finance:write")
+            wire = tool.model_dump(by_alias=True, exclude_none=True)
+            self.assertEqual(wire["_meta"]["securitySchemes"], [
+                {"type": "oauth2", "scopes": scopes},
+            ], tool.name)
+
 
 class AdapterTests(unittest.IsolatedAsyncioTestCase):
     async def test_removed_analytics_alias_reaches_core_with_specific_details(self):
