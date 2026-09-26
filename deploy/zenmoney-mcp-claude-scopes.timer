@@ -1,5 +1,5 @@
 [Unit]
-Description=Keep Claude Web OAuth scopes available for ZenMoney MCP
+Description=Keep Claude Web finance scopes available in shared master realm
 
 [Timer]
 OnBootSec=1min

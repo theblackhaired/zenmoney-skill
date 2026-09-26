@@ -11,6 +11,7 @@ from starlette.responses import JSONResponse
 from .auth import READ_SCOPE, WRITE_SCOPE, AuthSettings, InvalidToken, TokenVerifier
 
 MAX_BODY_SIZE = 1024 * 1024
+INITIAL_SCOPES = f"{READ_SCOPE} {WRITE_SCOPE}"
 
 
 def _tool_listing_with_security_schemes(body: bytes) -> bytes:
@@ -99,11 +100,11 @@ class ProtectedMCP:
         auth_headers = Headers(scope=scope).getlist("authorization")
         parts = auth_headers[0].split() if len(auth_headers) == 1 else []
         if len(parts) != 2 or parts[0].lower() != "bearer" or len(parts[1]) > 16384:
-            return await self._error(scope, receive, send, 401, "invalid_token")
+            return await self._error(scope, receive, send, 401, "invalid_token", INITIAL_SCOPES)
         try:
             scopes = await self.verifier.verify(parts[1])
         except InvalidToken:
-            return await self._error(scope, receive, send, 401, "invalid_token")
+            return await self._error(scope, receive, send, 401, "invalid_token", INITIAL_SCOPES)
         if READ_SCOPE not in scopes:
             return await self._error(scope, receive, send, 403, "insufficient_scope")
 

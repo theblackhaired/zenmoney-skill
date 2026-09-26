@@ -14,6 +14,11 @@ spec.loader.exec_module(module)
 TEST_CLIENT_SECRET = "unit-test-only-client-secret-00001"
 
 
+def test_public_issuer_and_mcp_audience_use_separate_hosts():
+    assert module.ISSUER == "https://auth.theblackhaired.ru/auth/realms/budget"
+    assert module.AUDIENCE == "https://budget.theblackhaired.ru/mcp"
+
+
 @pytest.mark.parametrize(
     "raw",
     [

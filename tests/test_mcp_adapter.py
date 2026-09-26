@@ -105,14 +105,11 @@ class CatalogTests(unittest.TestCase):
                 self.assertIn("confirm_write", tool.input_schema["required"])
                 self.assertTrue(tool.input_schema["properties"]["confirm_write"]["const"])
 
-    def test_tool_security_schemes_match_required_scopes(self):
+    def test_every_tool_advertises_both_scopes_for_initial_consent(self):
         for tool in TOOLS:
-            scopes = ["finance:read"]
-            if tool.name in WRITE_TOOLS:
-                scopes.append("finance:write")
             wire = tool.model_dump(by_alias=True, exclude_none=True)
             self.assertEqual(wire["_meta"]["securitySchemes"], [
-                {"type": "oauth2", "scopes": scopes},
+                {"type": "oauth2", "scopes": ["finance:read", "finance:write"]},
             ], tool.name)
 
 

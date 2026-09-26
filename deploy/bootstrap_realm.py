@@ -21,7 +21,7 @@ from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 REALM = "budget"
-ISSUER = "https://budget.theblackhaired.ru/auth/realms/budget"
+ISSUER = "https://auth.theblackhaired.ru/auth/realms/budget"
 AUDIENCE = "https://budget.theblackhaired.ru/mcp"
 SCOPES = ("finance:read", "finance:write")
 OIDC_OPTIONAL_SCOPES = ("email", "profile")

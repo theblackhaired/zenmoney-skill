@@ -207,7 +207,9 @@ def build_tools() -> list[Tool]:
             inputSchema=schema,
             _meta={"securitySchemes": [{
                 "type": "oauth2",
-                "scopes": [READ_SCOPE, WRITE_SCOPE] if is_write else [READ_SCOPE],
+                # Ask for both grants during initial connection; per-call
+                # authorization still follows each tool's read/write role.
+                "scopes": [READ_SCOPE, WRITE_SCOPE],
             }]},
             annotations=ToolAnnotations(
                 readOnlyHint=not is_write,

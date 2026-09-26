@@ -1,5 +1,5 @@
 [Unit]
-Description=Reconcile Claude Web OAuth scopes for ZenMoney MCP
+Description=Reconcile Claude Web finance scopes in shared master realm
 
 [Service]
 Type=oneshot

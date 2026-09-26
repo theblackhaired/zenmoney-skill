@@ -32,7 +32,7 @@ services:
       KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?Run generate_env.py first}
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Run generate_env.py first}
-      KC_HOSTNAME: https://budget.theblackhaired.ru/auth
+      KC_HOSTNAME: https://auth.theblackhaired.ru/auth
       KC_HTTP_RELATIVE_PATH: /auth
       KC_HTTP_ENABLED: "true"
       KC_PROXY_HEADERS: xforwarded

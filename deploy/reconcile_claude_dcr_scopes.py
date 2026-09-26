@@ -1,4 +1,4 @@
-"""Add optional finance:write to narrowly matched Claude Web DCR clients.
+"""Add optional finance:write to narrowly matched Claude Web DCR clients in master.
 
 Run after Keycloak bootstrap and after Claude creates its dynamic client:
     python3 deploy/reconcile_claude_dcr_scopes.py
@@ -20,9 +20,10 @@ from uuid import UUID
 if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from deploy.bootstrap_realm import Admin, BootstrapError, REALM
+from deploy.bootstrap_realm import Admin, BootstrapError
 
 
+REALM = "master"
 CLAUDE_CALLBACKS = frozenset(
     {
         "https://claude.ai/api/mcp/auth_callback",
@@ -88,6 +89,50 @@ def assigned_names(scopes, label):
     return set(names)
 
 
+def require_no_role_mappings(api, path):
+    mappings = api.request("GET", path + "/scope-mappings") or {}
+    if not isinstance(mappings, dict):
+        raise BootstrapError("Invalid master roles scope mappings")
+    client = mappings.get("clientMappings") or {}
+    realm = mappings.get("realmMappings") or []
+    if not isinstance(client, dict) or any(client.values()) or not isinstance(realm, list) or realm:
+        raise BootstrapError("Unexpected master roles scope mappings")
+
+
+def require_safe_inherited_roles(api, realm_path, scopes, client_path):
+    roles = unique_scope(scopes, "roles")
+    roles_path = realm_path + "/client-scopes/" + quote(roles["id"], safe="")
+    require_no_role_mappings(api, roles_path)
+    require_no_role_mappings(api, client_path)
+    mappers = require_list(
+        api.request("GET", roles_path + "/protocol-mappers/models"),
+        "master roles scope mapper list",
+    )
+    expected = {
+        "oidc-usermodel-realm-role-mapper": "realm_access.roles",
+        "oidc-usermodel-client-role-mapper": "resource_access.${client_id}.roles",
+        "oidc-audience-resolve-mapper": None,
+    }
+    if len(mappers) != len(expected):
+        raise BootstrapError("Unexpected master roles scope mappers")
+    seen = set()
+    for mapper in mappers:
+        if not isinstance(mapper, dict) or mapper.get("protocol") != "openid-connect":
+            raise BootstrapError("Unexpected master roles scope mappers")
+        kind = mapper.get("protocolMapper")
+        config = mapper.get("config") or {}
+        if kind not in expected or kind in seen or not isinstance(config, dict):
+            raise BootstrapError("Unexpected master roles scope mappers")
+        if config.get("claim.name") != expected[kind]:
+            raise BootstrapError("Unexpected master roles scope claim")
+        if any(
+            not isinstance(key, str) or (key.startswith("included.") and key.endswith(".audience"))
+            for key in config
+        ):
+            raise BootstrapError("Unexpected master roles scope audience")
+        seen.add(kind)
+
+
 def iter_clients(api, realm_path):
     seen = set()
     first = 0
@@ -131,8 +176,8 @@ def reconcile(api):
     scanned = 0
     matched = 0
     pending = []
-    # Preflight every match before changing any client. A malformed later page
-    # must not leave a partial migration from the same run.
+    # Preflight every Budget match before changing any client. A malformed
+    # later page must not leave a partial migration from the same run.
     for client_id in iter_clients(api, realm_path):
         scanned += 1
         path = realm_path + "/clients/" + quote(client_id, safe="")
@@ -141,11 +186,19 @@ def reconcile(api):
             raise BootstrapError("Unexpected Keycloak client representation")
         if not eligible(client):
             continue
-        matched += 1
         optional = assigned_names(api.request("GET", path + "/optional-client-scopes"), "optional scope list")
-        defaults = assigned_names(api.request("GET", path + "/default-client-scopes"), "default scope list")
         if "finance:read" not in optional:
-            raise BootstrapError("Claude DCR client is missing optional finance:read")
+            # Invest DCR clients share the callback/profile but not Budget scopes.
+            continue
+        matched += 1
+        defaults = assigned_names(api.request("GET", path + "/default-client-scopes"), "default scope list")
+        if "roles" in defaults or "roles" in optional:
+            # A no-scope DCR registration can inherit the realm's default roles
+            # scope alongside optional finance scopes. Accept it only when the
+            # write scope is already optional and roles cannot map claims or aud.
+            if "roles" not in defaults or "roles" in optional or "finance:write" not in optional:
+                raise BootstrapError("Claude DCR client exposes master roles scope")
+            require_safe_inherited_roles(api, realm_path, scopes, path)
         if "finance:write" in defaults:
             raise BootstrapError("Claude DCR client has unexpected default finance:write")
         if "finance:write" not in optional:
